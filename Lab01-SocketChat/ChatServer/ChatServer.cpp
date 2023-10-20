@@ -36,15 +36,16 @@ ChatServer::ChatServer(const char* ip, unsigned short port) : serverIP(ip), serv
 	}
 
 	serverAddr.sin_family = AF_INET; // IPv4 协议
-	inet_pton(AF_INET, serverIP, &serverAddr.sin_addr); // 服务器 IP
+	//inet_pton(AF_INET, serverIP, &serverAddr.sin_addr); // 服务器 IP：默认为 127.0.0.1
+	serverAddr.sin_addr.s_addr = INADDR_ANY; // 将 IP 地址设置为 0.0.0.0
 	//serverAddr.sin_addr.S_un.S_addr = inet_addr(serverIP); // 服务器 IP
 	serverAddr.sin_port = htons(serverPort); // 服务器端口号
 
-	//char ipAddrStr[IPADDR_STRLEN];
+	char ipAddrStr[IPADDR_STRLEN];
 	cout << "ChatServer Created!" << endl;
 	cout << "ChatServer Info:\n";
-	//cout << "\tServer IP: " << inet_ntop(AF_INET, &(serverAddr.sin_addr), ipAddrStr, IPADDR_STRLEN) << endl;
-	cout << "\tServer IP: " << serverIP << endl;
+	cout << "\tServer IP: " << inet_ntop(AF_INET, &(serverAddr.sin_addr), ipAddrStr, IPADDR_STRLEN) << endl;
+	//cout << "\tServer IP: " << serverIP << endl;
 	cout << "\tServer Port: " << serverPort << endl;
 	cout << endl;
 }

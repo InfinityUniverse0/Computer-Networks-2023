@@ -4,7 +4,8 @@
 
 int main() {
 	cout << "--------- SocketChat Client ---------\n" << endl;
-	ChatClient client;
+	ChatClient client; // 默认使用本地服务器
+	//ChatClient client(REMOTE_SERVER_IP); // 使用远程服务器
 	client.Start();
 	return 0;
 }
