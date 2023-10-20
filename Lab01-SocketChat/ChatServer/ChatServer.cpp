@@ -115,6 +115,34 @@ void ChatServer::Start() {
 			continue;
 		}
 
+		// 创建线程前的客户端初始化操作：会引起阻塞
+		char recvBuf[DEFAULT_BUFLEN + 1];
+		int recvLen;
+
+		// 记录客户端 Socket
+		clientSocketList.push_back(clientSocket);
+
+		// 记录客户端序号
+		if (clientIDList.size() == 0) {
+			clientIDList.push_back(1); // 第一个客户端序号为 1
+		}
+		else {
+			clientIDList.push_back(clientIDList.back() + 1); // 客户端序号递增
+		}
+
+		/*
+		 * 为防止前面的客户端输入用户名时发生阻塞，导致后面的客户端无法连接
+		 * 这里首先由服务器为客户端分配一个默认的用户名（客户端 ID）
+		 */
+
+		// 发送客户端 ID
+		string id = to_string(clientIDList.back());
+		send(clientSocket, (char*)id.c_str(), id.length(), 0);
+
+		// 为客户端分配默认用户名
+		string defaultUserName = "User" + id;
+		userNameList.push_back(defaultUserName);
+
 		// 创建线程接收客户端消息
 		HANDLE hThread = CreateThread(
 			NULL, 0, (LPTHREAD_START_ROUTINE)RecvMsgThread, (LPVOID)clientSocket, 0, NULL
@@ -136,38 +164,36 @@ DWORD WINAPI ChatServer::RecvMsgThread(LPVOID lpParameter) {
 	char recvBuf[DEFAULT_BUFLEN + 1];
 	int recvLen;
 
-	// 记录客户端 Socket
-	clientSocketList.push_back(clientSocket);
-
-	// 记录客户端序号
-	if (clientIDList.size() == 0) {
-		clientIDList.push_back(1); // 第一个客户端序号为 1
-	}
-	else {
-		clientIDList.push_back(clientIDList.back() + 1); // 客户端序号递增
-	}
-
 	// 接收客户端用户名
 	recvLen = recv(clientSocket, recvBuf, DEFAULT_BUFLEN, 0);
 	char* userName = new char[recvLen + 1];
 	strncpy_s(userName, recvLen + 1, recvBuf, recvLen);
 	userName[recvLen] = '\0';
 
-	// 记录客户端用户名
-	userNameList.push_back(userName);
-
-	// 发送客户端 ID
-	string id = to_string(clientIDList.back());
-	send(clientSocket, (char*)id.c_str(), id.length(), 0);
+	// 更新客户端用户名
+	unsigned int clientID;
+	list<SOCKET>::iterator it_clientSocket = clientSocketList.begin();
+	list<string>::iterator it_userName = userNameList.begin();
+	list<unsigned int>::iterator it_clientID = clientIDList.begin();
+	for (int i = 0; i < clientIDList.size(); i++) {
+		if (*it_clientSocket == clientSocket) {
+			*it_userName = userName;
+			clientID = *it_clientID;
+			break;
+		}
+		it_clientSocket++;
+		it_userName++;
+		it_clientID++;
+	}
 
 	// 发送欢迎消息
 	send(clientSocket, WELCOME_MSG, strlen(WELCOME_MSG), 0);
 
 	// 广播消息
-	string msg = "[ID:" + to_string(clientIDList.back()) + "@" + userName + "] has joined the SocketChat Room!\n";
+	string msg = "[ID:" + to_string(clientID) + "@" + userName + "] has joined the SocketChat Room!\n";
 	msg += "# Current Online in this SocketChat Room: " + to_string(clientIDList.size());
 	SendMsgToAll((char*)msg.c_str(), msg.length());
-	
+
 	while (true) {
 		// 接收客户端消息
 		recvLen = recv(clientSocket, recvBuf, DEFAULT_BUFLEN, 0);

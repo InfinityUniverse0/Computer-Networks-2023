@@ -72,6 +72,19 @@ void ChatClient::Connect() {
 
 	cout << endl;
 
+	char recvBuf[DEFAULT_BUFLEN + 1]; // 接收缓冲区
+
+	// 接收服务器分配的 ID
+	recvLen = recv(clientSocket, recvBuf, DEFAULT_BUFLEN, 0);
+	if (recvLen == SOCKET_ERROR) {
+		cout << "Recv Client ID Failed!\n";
+		closesocket(clientSocket);
+		WSACleanup();
+		exit(1);
+	}
+	recvBuf[recvLen] = '\0';
+	clientID = (unsigned int)atoi(recvBuf);
+
 	// 输入用户名
 	cout << "Please Input Your Name:\n";
 	cin >> userName;
@@ -90,17 +103,6 @@ void ChatClient::Connect() {
 		exit(1);
 	}
 
-	char recvBuf[DEFAULT_BUFLEN + 1]; // 接收缓冲区
-	// 接收服务器分配的 ID
-	recvLen = recv(clientSocket, recvBuf, DEFAULT_BUFLEN, 0);
-	if (recvLen == SOCKET_ERROR) {
-		cout << "Recv Client ID Failed!\n";
-		closesocket(clientSocket);
-		WSACleanup();
-		exit(1);
-	}
-	recvBuf[recvLen] = '\0';
-	clientID = (unsigned int)atoi(recvBuf);
 	cout << "Your User Name: " << userName << endl;
 	cout << "Your Client ID: " << clientID << endl;
 	cout << endl;
