@@ -116,9 +116,7 @@ void ChatServer::Start() {
 			continue;
 		}
 
-		// 创建线程前的客户端初始化操作：会引起阻塞
-		char recvBuf[DEFAULT_BUFLEN + 1];
-		int recvLen;
+		// 创建线程前的客户端初始化操作
 
 		// 记录客户端 Socket
 		clientSocketList.push_back(clientSocket);
@@ -131,14 +129,14 @@ void ChatServer::Start() {
 			clientIDList.push_back(clientIDList.back() + 1); // 客户端序号递增
 		}
 
-		/*
-		 * 为防止前面的客户端输入用户名时发生阻塞，导致后面的客户端无法连接
-		 * 这里首先由服务器为客户端分配一个默认的用户名（客户端 ID）
-		 */
-
 		// 发送客户端 ID
 		string id = to_string(clientIDList.back());
 		send(clientSocket, (char*)id.c_str(), id.length(), 0);
+
+		/*
+		 * 为防止前面的客户端输入用户名时发生阻塞，导致后面的客户端无法连接
+		 * 这里首先由服务器为客户端分配一个默认的用户名（User + 客户端 ID）
+		 */
 
 		// 为客户端分配默认用户名
 		string defaultUserName = "User" + id;
@@ -251,6 +249,7 @@ DWORD WINAPI ChatServer::RecvMsgThread(LPVOID lpParameter) {
 		closesocket(clientSocket); // 关闭客户端 Socket
 		break;
 	}
+	return 0;
 }
 
 void ChatServer::SendMsgToAll(char* msg, int len, SOCKET senderClientSocket) {
