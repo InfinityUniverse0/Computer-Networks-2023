@@ -7,3 +7,9 @@ This repository contains the laboratory assignments for the Computer Networks co
 Write a chat program using Socket.
 
 See [Lab01-SocketChat](./Lab01-SocketChat/README.md) for more details.
+
+## Lab02-Web
+
+Configure a web server and write a simple Web page. Then analyze the interaction process between Client and Server using WireShark.
+
+See [Lab02-Web](./Lab02-Web/README.md) for more details.
