@@ -65,6 +65,7 @@ void Receiver::start() {
 	char recvBuf[sizeof(DataPacket)];
 	int recvLen;
 	DataPacket* recvPacket;
+	bool has_syn = false;
 	while (true) {
 		// 接收 SYN
 		int AddrLen = sizeof(senderAddr);
@@ -77,7 +78,8 @@ void Receiver::start() {
 		}
 
 		if (parse_packet(recvBuf, recvLen, recvPacket)) {
-			if (isSYN(recvPacket)) {
+			if (isSYN(recvPacket) && ack == recvPacket->seq) {
+				has_syn = true;
 				// Log
 				log(LogType::LOG_TYPE_PKT, "[Recv SYN]", recvPacket);
 				ack = recvPacket->seq + 1;
@@ -98,10 +100,12 @@ void Receiver::start() {
 				log(LogType::LOG_TYPE_PKT, "[Send SYN + ACK]", ackPacket);
 				delete ackPacket; // 释放内存
 			}
-			else if (isACK(recvPacket)) {
+			else if (isACK(recvPacket) && ack == recvPacket->seq) {
 				log(LogType::LOG_TYPE_PKT, "[Recv ACK]", recvPacket);
 				ack = recvPacket->seq + 1;
-				break;
+				if (has_syn) {
+					break;
+				}
 			}
 		}
 	}
@@ -119,7 +123,7 @@ void Receiver::start() {
 		exit(1);
 	}
 
-	if (parse_packet(recvBuf, recvLen, recvPacket) && isBEG(recvPacket)) {
+	if (parse_packet(recvBuf, recvLen, recvPacket) && isBEG(recvPacket) && ack == recvPacket->seq) {
 		// Log
 		log(LogType::LOG_TYPE_PKT, "[Recv] Start of file", recvPacket);
 		// cout << "Receive BEG" << endl;
@@ -140,15 +144,9 @@ void Receiver::start() {
 			exit(1);
 		}
 		seq++;
-		// Log
-		// cout << "Send ACK" << endl;
 
 		// 接收文件
 		recvFile(recvPacket->data);
-	}
-	else {
-		// Log
-		// cout << "Receive BEG Failed!" << endl;
 	}
 }
 
@@ -178,7 +176,7 @@ void Receiver::recvFile(const char* filePath) {
 			exit(1);
 		}
 		if (parse_packet(recvBuf, recvLen, recvPacket)) {
-			if (isEND(recvPacket)) {
+			if (isEND(recvPacket) && ack == recvPacket->seq) {
 				// Log
 				log(LogType::LOG_TYPE_PKT, "[Recv] End of file", recvPacket);
 				// cout << "Receive END" << endl;
@@ -206,7 +204,7 @@ void Receiver::recvFile(const char* filePath) {
 				// cout << "Receive File Succeed!" << endl;
 				break;
 			}
-			else {
+			else if (ack == recvPacket->seq) {
 				// Log
 				log(LogType::LOG_TYPE_PKT, "[Recv]", recvPacket);
 				ack = recvPacket->seq + recvPacket->dataLength;

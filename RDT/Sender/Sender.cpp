@@ -96,53 +96,83 @@ void Sender::connect() {
 	seq++;
 	log(LogType::LOG_TYPE_PKT, "[Send SYN]", packet);
 
-	// 接收 SYN + ACK
-	char recvBuf[sizeof(DataPacket)];
-	int addrLen = sizeof(recvAddr);
-	int recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
-	if (recvLen == SOCKET_ERROR) {
-		// Log
-		log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
-		log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
+	// 超时重传
+	while (true) {
+		// 设置 fd_set 结构
+		fd_set readfds;
+		FD_ZERO(&readfds);
+		FD_SET(senderSocket, &readfds);
+
+		// 设置超时时间
+		struct timeval timeout;
+		timeout.tv_sec = TIME_OUT_SECS;
+		timeout.tv_usec = 0;
+
+		// 使用 select 函数进行超时检测
+		int ret = select(0, &readfds, NULL, NULL, &timeout);
+		if (ret == 0) {
+			// 超时，进行重传
+			log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
+			sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE + packet->dataLength, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
+			log(LogType::LOG_TYPE_PKT, "[Resend]", packet);
+		} else if (ret == SOCKET_ERROR) {
+			// Log
+			log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
+			break;
+		} else {
+			// 有数据可读，进行读取
+			char recvBuf[sizeof(DataPacket)];
+			DataPacket_t recvPacket;
+			int addrLen = sizeof(recvAddr);
+			int recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
+			if (recvLen == SOCKET_ERROR) {
+				// Log
+				log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
+				log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
+				closesocket(senderSocket);
+				WSACleanup();
+				exit(1);
+			}
+			if (parse_packet(recvBuf, recvLen, recvPacket)) {
+				if (isSYN(recvPacket) && isACK(recvPacket) && recvPacket->ack == seq) {
+					ack = recvPacket->seq + 1;
+					// Log
+					log(LogType::LOG_TYPE_PKT, "[Recv SYN + ACK]", recvPacket);
+					delete packet; // 释放内存
+					break;
+				}
+				// else {
+				// 	// Log
+				// 	log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
+				// 	closesocket(senderSocket);
+				// 	WSACleanup();
+				// 	exit(1);
+				// }
+			}
+			// else {
+			// 	// Log
+			// 	// Checksum Error
+			// 	log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
+			// 	closesocket(senderSocket);
+			// 	WSACleanup();
+			// 	exit(1);
+			// }
+		}
 	}
+
+	// 发送 ACK
+	packet = make_packet(
+		senderAddr.sin_addr.s_addr, recvAddr.sin_addr.s_addr,
+		senderAddr.sin_port, recvAddr.sin_port,
+		seq, ack, ACK,
+		"", 0
+	);
+	sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
+	seq++;
+	log(LogType::LOG_TYPE_PKT, "[Send ACK]", packet);
+	// Log
+	log(LogType::LOG_TYPE_INFO, "Handshake Succeed!");
 	delete packet; // 释放内存
-	if (parse_packet(recvBuf, recvLen, packet)) {
-		if (isSYN(packet) && isACK(packet)) {
-			log(LogType::LOG_TYPE_PKT, "[Recv SYN + ACK]", packet);
-			// 发送 ACK
-			ack = packet->seq + 1;
-			packet = make_packet(
-				senderAddr.sin_addr.s_addr, recvAddr.sin_addr.s_addr,
-				senderAddr.sin_port, recvAddr.sin_port,
-				seq, ack, ACK,
-				"", 0
-			);
-			sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-			seq++;
-			log(LogType::LOG_TYPE_PKT, "[Send ACK]", packet);
-			// Log
-			log(LogType::LOG_TYPE_INFO, "Handshake Succeed!");
-			delete packet; // 释放内存
-		}
-		else {
-			// Log
-			log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
-			closesocket(senderSocket);
-			WSACleanup();
-			exit(1);
-		}
-	}
-	else {
-		// Log
-		// Checksum Error
-		log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
-	}
 }
 
 void Sender::sendFile(const char* filePath) {
@@ -201,18 +231,18 @@ void Sender::sendFile(const char* filePath) {
 					delete packet; // 释放内存
 					break;
 				}
-				else {
-					// Log
-					log(LogType::LOG_TYPE_ERROR, "File Name Sent Failed!");
-					log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-				}
+				// else {
+				// 	// Log
+				// 	log(LogType::LOG_TYPE_ERROR, "File Name Sent Failed!");
+				// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
+				// }
 			}
-			else {
-				// Log
-				// Checksum Error
-				log(LogType::LOG_TYPE_ERROR, "Checksum Error");
-				log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-			}
+			// else {
+			// 	// Log
+			// 	// Checksum Error
+			// 	log(LogType::LOG_TYPE_ERROR, "Checksum Error");
+			// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
+			// }
 		}
 	}
 
@@ -291,18 +321,18 @@ void Sender::sendFile(const char* filePath) {
 						delete packet; // 释放内存
 						break;
 					}
-					else {
-						// Log
-						log(LogType::LOG_TYPE_ERROR, "File Sent Error");
-						log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-					}
+					// else {
+					// 	// Log
+					// 	log(LogType::LOG_TYPE_ERROR, "File Sent Error");
+					// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
+					// }
 				}
-				else {
-					// Log
-					// Checksum Error
-					log(LogType::LOG_TYPE_ERROR, "Checksum Error");
-					log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-				}
+				// else {
+				// 	// Log
+				// 	// Checksum Error
+				// 	log(LogType::LOG_TYPE_ERROR, "Checksum Error");
+				// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
+				// }
 			}
 		}
 	}
@@ -352,18 +382,18 @@ void Sender::sendFile(const char* filePath) {
 					delete packet; // 释放内存
 					break;
 				}
-				else {
-					// Log
-					log(LogType::LOG_TYPE_ERROR, "File Sent Error");
-					log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-				}
+				// else {
+				// 	// Log
+				// 	log(LogType::LOG_TYPE_ERROR, "File Sent Error");
+				// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
+				// }
 			}
-			else {
-				// Log
-				// Checksum Error
-				log(LogType::LOG_TYPE_ERROR, "Checksum Error");
-				log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-			}
+			// else {
+			// 	// Log
+			// 	// Checksum Error
+			// 	log(LogType::LOG_TYPE_ERROR, "Checksum Error");
+			// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
+			// }
 		}
 	}
 
@@ -414,22 +444,22 @@ void Sender::close() {
 			// Log
 			log(LogType::LOG_TYPE_PKT, "[Recv ACK]", recvPacket);
 		}
-		else {
-			// Log
-			log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-			closesocket(senderSocket);
-			WSACleanup();
-			exit(1);
-		}
+		// else {
+		// 	// Log
+		// 	log(LogType::LOG_TYPE_ERROR, "Close Failed!");
+		// 	closesocket(senderSocket);
+		// 	WSACleanup();
+		// 	exit(1);
+		// }
 	}
-	else {
-		// Log
-		// Checksum Error
-		log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
-	}
+	// else {
+	// 	// Log
+	// 	// Checksum Error
+	// 	log(LogType::LOG_TYPE_ERROR, "Close Failed!");
+	// 	closesocket(senderSocket);
+	// 	WSACleanup();
+	// 	exit(1);
+	// }
 
 	// 接收 FIN + ACK
 	recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
@@ -446,25 +476,24 @@ void Sender::close() {
 			ack = recvPacket->seq + 1;
 			log(LogType::LOG_TYPE_PKT, "[Recv FIN + ACK]", recvPacket);
 		}
-		else {
-			// Log
-			log(LogType::LOG_TYPE_ERROR, "ERR");
-			// cout << "Close Failed!\n";
-			// closesocket(senderSocket);
-			// WSACleanup();
-			// exit(1);
-		}
+		// else {
+		// 	// Log
+		// 	// cout << "Close Failed!\n";
+		// 	// closesocket(senderSocket);
+		// 	// WSACleanup();
+		// 	// exit(1);
+		// }
 		// log(LogType::LOG_TYPE_PKT, "[Recv FIN + ACK]", recvPacket);
 	}
-	else {
-		// Log
-		// Checksum Error
-		log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-		// cout << "checksum error!\n";
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
-	}
+	// else {
+	// 	// Log
+	// 	// Checksum Error
+	// 	log(LogType::LOG_TYPE_ERROR, "Close Failed!");
+	// 	// cout << "checksum error!\n";
+	// 	closesocket(senderSocket);
+	// 	WSACleanup();
+	// 	exit(1);
+	// }
 
 	// 发送 ACK
 	delete packet; // 释放内存
@@ -484,11 +513,6 @@ void Sender::close() {
 	log(LogType::LOG_TYPE_INFO, "Wavehand Succeed!");
 }
 
-// DWORD WINAPI TimeoutThread(LPVOID lpParam) {
-// 	Sender* sender = (Sender*)lpParam;
-// 	// 超时重传
-// 	return 0;
-// }
 
 int main() {
 	Sender sender;
