@@ -93,7 +93,7 @@ bool parse_packet(char* dataPacket, int packetLen, DataPacket_t& packet);
 // send packet
 void send_packet(SOCKET socket, SOCKADDR_IN addr, DataPacket_t packet);
 // recv packet
-int recv_packet(SOCKET socket, SOCKADDR_IN& addr, DataPacket_t& packet);
+int recv_packet(SOCKET socket, SOCKADDR_IN& addr, char* buf, int bufLen, DataPacket_t& packet);
 
 // 差错检验
 unsigned short cal_checksum(DataPacket_t packet);

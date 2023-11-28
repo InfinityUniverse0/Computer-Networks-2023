@@ -116,8 +116,9 @@ void Sender::connect() {
 			exit(1);
 		} else {
 			// 有数据可读，进行读取
+			char recvBuf[sizeof(DataPacket)];
 			DataPacket_t recvPacket;
-			int recvLen = recv_packet(senderSocket, recvAddr, recvPacket);
+			int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
 			if (recvLen == -1) {
 				log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
 				continue;
@@ -276,7 +277,7 @@ void Sender::close() {
 	// 接收 FIN + ACK
 	char recvBuf[sizeof(DataPacket)];
 	DataPacket_t recvPacket;
-	int recvLen = recv_packet(senderSocket, recvAddr, recvPacket);
+	int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
 	
 	if (recvLen == -1) {
 		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
@@ -349,8 +350,9 @@ void Sender::sendPacket(DataPacket_t packet) {
 }
 
 bool Sender::recvACK() { // 接收 ACK
+	char recvBuf[sizeof(DataPacket)];
 	DataPacket_t recvPacket;
-	int recvLen = recv_packet(senderSocket, recvAddr, recvPacket);
+	int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
 	if (recvLen == -1) {
 		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
 		return false;
