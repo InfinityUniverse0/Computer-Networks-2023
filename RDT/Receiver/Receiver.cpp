@@ -64,7 +64,7 @@ void Receiver::start() {
 	// 三次握手
 	char recvBuf[sizeof(DataPacket)];
 	int recvLen;
-	DataPacket* recvPacket;
+	DataPacket_t recvPacket;
 	bool has_syn = false;
 	while (true) {
 		// 接收 SYN
@@ -84,7 +84,7 @@ void Receiver::start() {
 				log(LogType::LOG_TYPE_PKT, "[Recv SYN]", recvPacket);
 				ack = recvPacket->seq + 1;
 				// 发送 SYN + ACK
-				DataPacket* ackPacket = make_packet(
+				DataPacket_t ackPacket = make_packet(
 					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 					recvAddr.sin_port, senderAddr.sin_port,
 					seq, ack, SYN | ACK,
@@ -117,12 +117,12 @@ void Receiver::start() {
 	// 接收文件名
 	// DataPacket_t recvPacket;
 	while (true) {
-		if (this->recvPacket(recvPacket)) {
+		if (this->recvPacket(recvBuf, sizeof(DataPacket), recvPacket)) {
 			if (isBEG(recvPacket)) {
 				log(LogType::LOG_TYPE_INFO, "[Recv BEG]");
 				log(LogType::LOG_TYPE_INFO, std::format("Start Receiving File `{}`!", recvPacket->data));
 				// 发送 ACK
-				DataPacket* ackPacket = make_packet(
+				DataPacket_t ackPacket = make_packet(
 					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 					recvAddr.sin_port, senderAddr.sin_port,
 					seq, ack, ACK,
@@ -135,7 +135,7 @@ void Receiver::start() {
 		}
 		else {
 			// 重发上次 ACK
-			DataPacket* ackPacket = make_packet(
+			DataPacket_t ackPacket = make_packet(
 				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 				recvAddr.sin_port, senderAddr.sin_port,
 				--seq, ack, ACK,
@@ -161,13 +161,14 @@ void Receiver::recvFile(const char* filePath) {
 		return;
 	}
 	// 接收数据
-	DataPacket* recvPacket;
+	char recvBuf[sizeof(DataPacket)];
+	DataPacket_t recvPacket;
 	while (true) {
-		if (this->recvPacket(recvPacket)) {
+		if (this->recvPacket(recvBuf, sizeof(DataPacket), recvPacket)) {
 			if (isEND(recvPacket)) {
 				log(LogType::LOG_TYPE_INFO, "[Recv END]");
 				// 发送 ACK
-				DataPacket* ackPacket = make_packet(
+				DataPacket_t ackPacket = make_packet(
 					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 					recvAddr.sin_port, senderAddr.sin_port,
 					seq, ack, ACK,
@@ -183,7 +184,7 @@ void Receiver::recvFile(const char* filePath) {
 			}
 			else {
 				// 发送 ACK
-				DataPacket* ackPacket = make_packet(
+				DataPacket_t ackPacket = make_packet(
 					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 					recvAddr.sin_port, senderAddr.sin_port,
 					seq, ack, ACK,
@@ -204,7 +205,7 @@ void Receiver::recvFile(const char* filePath) {
 		}
 		else {
 			// 重发上次 ACK
-			DataPacket* ackPacket = make_packet(
+			DataPacket_t ackPacket = make_packet(
 				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 				recvAddr.sin_port, senderAddr.sin_port,
 				--seq, ack, ACK,
@@ -222,7 +223,7 @@ void Receiver::close() {
 	// 接收 FIN + ACK
 	char recvBuf[sizeof(DataPacket)];
 	int addrLen = sizeof(senderAddr);
-	DataPacket* recvPacket;
+	DataPacket_t recvPacket;
 	int recvLen = recvfrom(recvSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&senderAddr, &addrLen);
 	if (recvLen == SOCKET_ERROR) {
 		log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
@@ -236,7 +237,7 @@ void Receiver::close() {
 			// Log
 			log(LogType::LOG_TYPE_PKT, "[Recv FIN + ACK]", recvPacket);
 			// 发送 ACK
-			DataPacket* ackPacket = make_packet(
+			DataPacket_t ackPacket = make_packet(
 				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 				recvAddr.sin_port, senderAddr.sin_port,
 				seq, ack, ACK,
@@ -253,7 +254,7 @@ void Receiver::close() {
 			delete ackPacket; // 释放内存
 
 			// 发送 FIN + ACK
-			DataPacket* finPacket = make_packet(
+			DataPacket_t finPacket = make_packet(
 				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 				recvAddr.sin_port, senderAddr.sin_port,
 				seq, ack, FIN | ACK,
@@ -293,8 +294,8 @@ void Receiver::sendACK(DataPacket_t packet) {
 	seq++;
 }
 
-bool Receiver::recvPacket(DataPacket_t& packet) {
-	int recvLen = recv_packet(recvSocket, senderAddr, packet);
+bool Receiver::recvPacket(char* buf, int bufLen, DataPacket_t& packet) {
+	int recvLen = recv_packet(recvSocket, senderAddr, buf, bufLen, packet);
 	if (recvLen == -1) {
 		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
 		return false;

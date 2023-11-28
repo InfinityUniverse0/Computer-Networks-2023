@@ -102,21 +102,21 @@ void send_packet(SOCKET sock, SOCKADDR_IN addr, DataPacket_t packet) {
     log(LOG_TYPE_PKT, "[Send]", packet);
 }
 
-int recv_packet(SOCKET sock, SOCKADDR_IN& addr, DataPacket_t& packet) {
+int recv_packet(SOCKET sock, SOCKADDR_IN& addr, char* buf, int bufLen, DataPacket_t& packet) {
     /*
      * 接收数据包
      * Args:
      *      @sock: 套接字
      *      @addr: 发送方地址
+     *      @buf: 接收缓冲区
+     *      @bufLen: 接收缓冲区长度
      *      @packet: 解析出的数据包
      * Return:
      *      return packet length if packet is NOT corrupt
      *      return -1 if packet is corrupt
      */
     int addrLen = sizeof(addr);
-    char* dataPacket = new char[sizeof(DataPacket)];
-    // char dataPacket[sizeof(DataPacket)];
-    int packetLen = recvfrom(sock, dataPacket, sizeof(DataPacket), 0, (SOCKADDR*)&addr, &addrLen);
+    int packetLen = recvfrom(sock, buf, bufLen, 0, (SOCKADDR*)&addr, &addrLen);
     if (packetLen == SOCKET_ERROR) {
         log(LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
         closesocket(sock);
@@ -129,7 +129,7 @@ int recv_packet(SOCKET sock, SOCKADDR_IN& addr, DataPacket_t& packet) {
         WSACleanup();
         exit(1);
     }
-    bool notCorrupt = parse_packet(dataPacket, packetLen, packet);
+    bool notCorrupt = parse_packet(buf, packetLen, packet);
     log(LOG_TYPE_PKT, "[Recv]", packet);
     if (notCorrupt)
         return packetLen;
