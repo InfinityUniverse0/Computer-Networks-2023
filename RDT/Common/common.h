@@ -8,7 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <windows.h>
-#include <chrono>
+#include <chrono> // 计时
 #include <format> // C++20
 #include <iomanip>
 #include <sstream>
@@ -37,8 +37,8 @@ Data Packet Format:
 
 Each line contains 32 bits(4 Bytes).
 BEG, END, SYN, FIN, ACK each contains 1 bit.
-BEG: Begin of File
-END: End of File
+BEG: Begin of File, i.e. file name
+END: End of File, i.e. empty packet
 */
 
 #define MAX_DATA_LENGTH 10240 // 10KiB
@@ -56,7 +56,7 @@ struct DataPacket {
     unsigned short dstPort;
     unsigned int seq;
     unsigned int ack;
-    unsigned int flags; // SYN: 0100, FIN: 0010, ACK: 0001
+    unsigned int flags; // BEG: 10000, END: 01000, SYN: 00100, FIN: 00010, ACK: 00001
     unsigned short checksum;
     unsigned short dataLength;
     char data[MAX_DATA_LENGTH];
@@ -89,6 +89,11 @@ DataPacket_t make_packet(
 );
 // 数据解包
 bool parse_packet(char* dataPacket, int packetLen, DataPacket_t& packet);
+
+// send packet
+void send_packet(SOCKET socket, SOCKADDR_IN addr, DataPacket_t packet);
+// recv packet
+int recv_packet(SOCKET socket, SOCKADDR_IN& addr, DataPacket_t& packet);
 
 // 差错检验
 unsigned short cal_checksum(DataPacket_t packet);

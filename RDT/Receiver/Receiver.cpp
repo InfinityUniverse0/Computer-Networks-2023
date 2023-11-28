@@ -113,41 +113,41 @@ void Receiver::start() {
 	// Log
 	log(LogType::LOG_TYPE_INFO, "Handshake Succeed!");
 
+
 	// 接收文件名
-	int addrLen = sizeof(senderAddr);
-	recvLen = recvfrom(recvSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&senderAddr, &addrLen);
-	if (recvLen == SOCKET_ERROR) {
-		log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
-		closesocket(recvSocket);
-		WSACleanup();
-		exit(1);
-	}
-
-	if (parse_packet(recvBuf, recvLen, recvPacket) && isBEG(recvPacket) && ack == recvPacket->seq) {
-		// Log
-		log(LogType::LOG_TYPE_PKT, "[Recv] Start of file", recvPacket);
-		// cout << "Receive BEG" << endl;
-		ack = recvPacket->seq + recvPacket->dataLength;
-		// Log
-		log(LogType::LOG_TYPE_INFO, std::format("Start Receiving File {}!", recvPacket->data));
-		// 发送 ACK
-		DataPacket* ackPacket = make_packet(
-			recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
-			recvAddr.sin_port, senderAddr.sin_port,
-			seq, ack, ACK,
-			"", 0
-		);
-		if (sendto(recvSocket, (char*)ackPacket, PKT_HEADER_SIZE, 0, (SOCKADDR*)&senderAddr, sizeof(SOCKADDR)) == SOCKET_ERROR) {
-			log(LogType::LOG_TYPE_ERROR, std::format("sendto() failed with error: {}", WSAGetLastError()));
-			closesocket(recvSocket);
-			WSACleanup();
-			exit(1);
+	// DataPacket_t recvPacket;
+	while (true) {
+		if (this->recvPacket(recvPacket)) {
+			if (isBEG(recvPacket)) {
+				log(LogType::LOG_TYPE_INFO, "[Recv BEG]");
+				log(LogType::LOG_TYPE_INFO, std::format("Start Receiving File `{}`!", recvPacket->data));
+				// 发送 ACK
+				DataPacket* ackPacket = make_packet(
+					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
+					recvAddr.sin_port, senderAddr.sin_port,
+					seq, ack, ACK,
+					"", 0
+				);
+				this->sendACK(ackPacket);
+				delete ackPacket; // 回收内存
+				break;
+			}
 		}
-		seq++;
-
-		// 接收文件
-		recvFile(recvPacket->data);
+		else {
+			// 重发上次 ACK
+			DataPacket* ackPacket = make_packet(
+				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
+				recvAddr.sin_port, senderAddr.sin_port,
+				--seq, ack, ACK,
+				"", 0
+			);
+			this->sendACK(ackPacket);
+			delete ackPacket; // 回收内存
+		}
 	}
+
+	// 接收文件
+	recvFile(recvPacket->data);
 }
 
 void Receiver::recvFile(const char* filePath) {
@@ -157,30 +157,15 @@ void Receiver::recvFile(const char* filePath) {
 	filesystem::create_directories(p.parent_path());
 	ofstream fout(p, ios::binary);
 	if (!fout) {
-		//std::cerr << "Failed to open file: " << strerror(errno) << std::endl;
-		closesocket(recvSocket);
-		WSACleanup();
-		exit(1);
+		log(LogType::LOG_TYPE_ERROR, std::format("Failed to open file `{}`", filePath));
+		return;
 	}
 	// 接收数据
-	char recvBuf[sizeof(DataPacket)];
-	int recvLen;
 	DataPacket* recvPacket;
 	while (true) {
-		int addrLen = sizeof(senderAddr);
-		recvLen = recvfrom(recvSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&senderAddr, &addrLen);
-		if (recvLen == SOCKET_ERROR) {
-			log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
-			closesocket(recvSocket);
-			WSACleanup();
-			exit(1);
-		}
-		if (parse_packet(recvBuf, recvLen, recvPacket)) {
-			if (isEND(recvPacket) && ack == recvPacket->seq) {
-				// Log
-				log(LogType::LOG_TYPE_PKT, "[Recv] End of file", recvPacket);
-				// cout << "Receive END" << endl;
-				ack = recvPacket->seq + 1;
+		if (this->recvPacket(recvPacket)) {
+			if (isEND(recvPacket)) {
+				log(LogType::LOG_TYPE_INFO, "[Recv END]");
 				// 发送 ACK
 				DataPacket* ackPacket = make_packet(
 					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
@@ -188,26 +173,15 @@ void Receiver::recvFile(const char* filePath) {
 					seq, ack, ACK,
 					"", 0
 				);
-				if (sendto(recvSocket, (char*)ackPacket, PKT_HEADER_SIZE, 0, (SOCKADDR*)&senderAddr, sizeof(SOCKADDR)) == SOCKET_ERROR) {
-					log(LogType::LOG_TYPE_ERROR, std::format("sendto() failed with error: {}", WSAGetLastError()));
-					closesocket(recvSocket);
-					WSACleanup();
-					exit(1);
-				}
-				seq++;
-				log(LogType::LOG_TYPE_PKT, "[Send]", ackPacket);
+				this->sendACK(ackPacket);
+				delete ackPacket; // 回收内存
 				// 关闭文件
 				fout.close();
 				// Log
-				log(LogType::LOG_TYPE_INFO, std::format("Receive File {} Succeed!", filePath));
-				// cout << "Send ACK" << endl;
-				// cout << "Receive File Succeed!" << endl;
+				log(LogType::LOG_TYPE_INFO, std::format("Receive File `{}` Succeed!", filePath));
 				break;
 			}
-			else if (ack == recvPacket->seq) {
-				// Log
-				log(LogType::LOG_TYPE_PKT, "[Recv]", recvPacket);
-				ack = recvPacket->seq + recvPacket->dataLength;
+			else {
 				// 发送 ACK
 				DataPacket* ackPacket = make_packet(
 					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
@@ -215,25 +189,29 @@ void Receiver::recvFile(const char* filePath) {
 					seq, ack, ACK,
 					"", 0
 				);
-				if (sendto(recvSocket, (char*)ackPacket, PKT_HEADER_SIZE, 0, (SOCKADDR*)&senderAddr, sizeof(SOCKADDR)) == SOCKET_ERROR) {
-					log(LogType::LOG_TYPE_ERROR, std::format("sendto() failed with error: {}", WSAGetLastError()));
-					closesocket(recvSocket);
-					WSACleanup();
-					exit(1);
-				}
-				seq++;
-				// Log
-				log(LogType::LOG_TYPE_PKT, "[Send]", ackPacket);
+				this->sendACK(ackPacket);
+				delete ackPacket; // 回收内存
 				// 写入文件
 				fout.write(recvPacket->data, recvPacket->dataLength);
 				if (!fout) {
 					log(LogType::LOG_TYPE_ERROR, "Failed to write to file");
-					//std::cerr << "Failed to write to file: " << strerror(errno) << std::endl;
+					// Need to close socket?
 					closesocket(recvSocket);
 					WSACleanup();
 					exit(1);
 				}
 			}
+		}
+		else {
+			// 重发上次 ACK
+			DataPacket* ackPacket = make_packet(
+				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
+				recvAddr.sin_port, senderAddr.sin_port,
+				--seq, ack, ACK,
+				"", 0
+			);
+			this->sendACK(ackPacket);
+			delete ackPacket; // 回收内存
 		}
 	}
 }
@@ -309,6 +287,29 @@ void Receiver::close() {
 		}
 	}
 }
+
+void Receiver::sendACK(DataPacket_t packet) {
+	send_packet(recvSocket, senderAddr, packet);
+	seq++;
+}
+
+bool Receiver::recvPacket(DataPacket_t& packet) {
+	int recvLen = recv_packet(recvSocket, senderAddr, packet);
+	if (recvLen == -1) {
+		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
+		return false;
+	}
+	if (packet->seq == ack) {
+		ack += packet->dataLength;
+		if (packet->dataLength == 0) {
+			ack++; // END, SYN, FIN, ACK 等 `空`包需增加 ack
+		}
+		return true;
+	}
+	log(LogType::LOG_TYPE_INFO, "ACK not matched!");
+	return false;
+}
+
 
 int main() {
 	Receiver receiver;

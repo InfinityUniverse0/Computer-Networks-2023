@@ -77,7 +77,7 @@ void Sender::connect() {
 	seq = 0;
 	ack = 0;
 
-	// 三次握手
+	// 三次握手（实则只需两次握手）
 	// 发送 SYN
 	DataPacket_t packet = make_packet(
 		senderAddr.sin_addr.s_addr, recvAddr.sin_addr.s_addr,
@@ -85,18 +85,12 @@ void Sender::connect() {
 		seq, ack, SYN,
 		"", 0
 	);
-	int ret = sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-	if (ret == SOCKET_ERROR) {
-		log(LogType::LOG_TYPE_ERROR, std::format("sendto() failed with error: {}", WSAGetLastError()));
-		log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
-	}
-	seq++;
-	log(LogType::LOG_TYPE_PKT, "[Send SYN]", packet);
 
-	// 超时重传
+	// 发送数据包
+	send_packet(senderSocket, recvAddr, packet);
+	seq++;
+	log(LogType::LOG_TYPE_INFO, "[Send SYN]");
+	// 超时重传 Timeout Retransmission
 	while (true) {
 		// 设置 fd_set 结构
 		fd_set readfds;
@@ -106,59 +100,38 @@ void Sender::connect() {
 		// 设置超时时间
 		struct timeval timeout;
 		timeout.tv_sec = TIME_OUT_SECS;
-		timeout.tv_usec = 0;
+		timeout.tv_usec = TIME_OUT_USECS;
 
 		// 使用 select 函数进行超时检测
 		int ret = select(0, &readfds, NULL, NULL, &timeout);
 		if (ret == 0) {
 			// 超时，进行重传
 			log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
-			sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE + packet->dataLength, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-			log(LogType::LOG_TYPE_PKT, "[Resend]", packet);
+			send_packet(senderSocket, recvAddr, packet);
 		} else if (ret == SOCKET_ERROR) {
 			// Log
 			log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
-			break;
+			closesocket(senderSocket);
+			WSACleanup();
+			exit(1);
 		} else {
 			// 有数据可读，进行读取
-			char recvBuf[sizeof(DataPacket)];
 			DataPacket_t recvPacket;
-			int addrLen = sizeof(recvAddr);
-			int recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
-			if (recvLen == SOCKET_ERROR) {
-				// Log
-				log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
-				log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
-				closesocket(senderSocket);
-				WSACleanup();
-				exit(1);
+			int recvLen = recv_packet(senderSocket, recvAddr, recvPacket);
+			if (recvLen == -1) {
+				log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
+				continue;
 			}
-			if (parse_packet(recvBuf, recvLen, recvPacket)) {
-				if (isSYN(recvPacket) && isACK(recvPacket) && recvPacket->ack == seq) {
-					ack = recvPacket->seq + 1;
-					// Log
-					log(LogType::LOG_TYPE_PKT, "[Recv SYN + ACK]", recvPacket);
-					delete packet; // 释放内存
-					break;
-				}
-				// else {
-				// 	// Log
-				// 	log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
-				// 	closesocket(senderSocket);
-				// 	WSACleanup();
-				// 	exit(1);
-				// }
+			if (isSYN(recvPacket) && isACK(recvPacket) && recvPacket->seq == ack) {
+				ack = recvPacket->seq + 1;
+				log(LogType::LOG_TYPE_INFO, "[Recv SYN + ACK]");
+				break;
 			}
-			// else {
-			// 	// Log
-			// 	// Checksum Error
-			// 	log(LogType::LOG_TYPE_ERROR, "Handshake Failed!");
-			// 	closesocket(senderSocket);
-			// 	WSACleanup();
-			// 	exit(1);
-			// }
+			log(LogType::LOG_TYPE_INFO, "[SYN + ACK recv failed]");
 		}
 	}
+	// 回收内存
+	delete packet;
 
 	// 发送 ACK
 	packet = make_packet(
@@ -167,22 +140,20 @@ void Sender::connect() {
 		seq, ack, ACK,
 		"", 0
 	);
-	sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
+	// 发送数据包
+	send_packet(senderSocket, recvAddr, packet);
 	seq++;
-	log(LogType::LOG_TYPE_PKT, "[Send ACK]", packet);
-	// Log
+	log(LogType::LOG_TYPE_INFO, "[Send ACK]");
+
+	// Handshake Succeed
 	log(LogType::LOG_TYPE_INFO, "Handshake Succeed!");
 	delete packet; // 释放内存
 }
 
 void Sender::sendFile(const char* filePath) {
-	char recvBuf[sizeof(DataPacket)]; // 缓冲区
-	int recvLen; // 接收到的数据长度
-	DataPacket_t recvPacket = nullptr; // 接收到的数据包
-	unsigned long long fileLen = 0; // 文件长度
+	log(LogType::LOG_TYPE_INFO, std::format("Start Sending File `{}`!", filePath));
 	// 在发送文件之前获取当前时间
     auto start = std::chrono::high_resolution_clock::now();
-	log(LogType::LOG_TYPE_INFO, std::format("Start Sending File {}!", filePath));
 	// 先发送文件名
 	DataPacket_t packet = make_packet(
 		senderAddr.sin_addr.s_addr, recvAddr.sin_addr.s_addr,
@@ -190,75 +161,19 @@ void Sender::sendFile(const char* filePath) {
 		seq, ack, BEG,
 		filePath, strlen(filePath)+1
 	);
-	sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE + packet->dataLength, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-	seq += packet->dataLength;
-	log(LogType::LOG_TYPE_PKT, "[Send] Start of file", packet);
-	// Log
-	log(LogType::LOG_TYPE_INFO, "File Name Sent!");
-
-	// 超时重传
-	while (true) {
-		// 设置 fd_set 结构
-		fd_set readfds;
-		FD_ZERO(&readfds);
-		FD_SET(senderSocket, &readfds);
-
-		// 设置超时时间
-		struct timeval timeout;
-		timeout.tv_sec = TIME_OUT_SECS;
-		timeout.tv_usec = 0;
-
-		// 使用 select 函数进行超时检测
-		int ret = select(0, &readfds, NULL, NULL, &timeout);
-		if (ret == 0) {
-			// 超时，进行重传
-			log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
-			sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE + packet->dataLength, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-			log(LogType::LOG_TYPE_PKT, "[Resend]", packet);
-		} else if (ret == SOCKET_ERROR) {
-			// Log
-			log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
-			break;
-		} else {
-			// 有数据可读，进行读取
-			int addrLen = sizeof(recvAddr);
-			recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
-			if (parse_packet(recvBuf, recvLen, recvPacket)) {
-				if (isACK(recvPacket) && recvPacket->ack == seq) {
-					ack = recvPacket->seq + 1;
-					// Log
-					log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-					delete packet; // 释放内存
-					break;
-				}
-				// else {
-				// 	// Log
-				// 	log(LogType::LOG_TYPE_ERROR, "File Name Sent Failed!");
-				// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-				// }
-			}
-			// else {
-			// 	// Log
-			// 	// Checksum Error
-			// 	log(LogType::LOG_TYPE_ERROR, "Checksum Error");
-			// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-			// }
-		}
-	}
+	sendPacket(packet);
+	log(LogType::LOG_TYPE_INFO, "[BEG] FileName Sent!");
 
 	// 读取文件
 	ifstream fin(filePath, ios::binary);
 	if (!fin) {
-		// Log
-		log(LogType::LOG_TYPE_ERROR, std::format("File {} Not Found!"));
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
+		log(LogType::LOG_TYPE_ERROR, std::format("File `{}` Not Found!", filePath));
+		return;
 	}
 
 	// 获取文件长度
 	fin.seekg(0, ios::end);
-	fileLen = fin.tellg();
+	unsigned long long fileLen = fin.tellg();
 	fin.seekg(0, ios::beg);
 
 	char fileBuf[MAX_DATA_LENGTH]; // 文件缓冲区
@@ -280,61 +195,7 @@ void Sender::sendFile(const char* filePath) {
 			seq, ack, 0,
 			fileBuf, dataLen
 		);
-		sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE + packet->dataLength, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-		seq += packet->dataLength;
-		// Log
-		log(LogType::LOG_TYPE_PKT, "[Send]", packet);
-		// cout << "File " << filePath << " Sent " << seq << " Bytes!\n";
-
-		// 超时重传
-		while (true) {
-			// 设置 fd_set 结构
-			fd_set readfds;
-			FD_ZERO(&readfds);
-			FD_SET(senderSocket, &readfds);
-
-			// 设置超时时间
-			struct timeval timeout;
-			timeout.tv_sec = TIME_OUT_SECS;
-			timeout.tv_usec = 0;
-
-			// 使用 select 函数进行超时检测
-			int ret = select(0, &readfds, NULL, NULL, &timeout);
-			if (ret == 0) {
-				// 超时，进行重传
-				log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
-				sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE + packet->dataLength, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-				log(LogType::LOG_TYPE_PKT, "[Resend]", packet);
-			} else if (ret == SOCKET_ERROR) {
-				// Log
-				log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
-				break;
-			} else {
-				// 有数据可读，进行读取
-				int addrLen = sizeof(recvAddr);
-				recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
-				if (parse_packet(recvBuf, recvLen, recvPacket)) {
-					if (isACK(recvPacket) && recvPacket->ack == seq) {
-						ack = recvPacket->seq + 1;
-						// Log
-						log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-						delete packet; // 释放内存
-						break;
-					}
-					// else {
-					// 	// Log
-					// 	log(LogType::LOG_TYPE_ERROR, "File Sent Error");
-					// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-					// }
-				}
-				// else {
-				// 	// Log
-				// 	// Checksum Error
-				// 	log(LogType::LOG_TYPE_ERROR, "Checksum Error");
-				// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-				// }
-			}
-		}
+		sendPacket(packet);
 	}
 
 	// 发送 END
@@ -344,62 +205,12 @@ void Sender::sendFile(const char* filePath) {
 		seq, ack, END,
 		"", 0
 	);
-	sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-	log(LogType::LOG_TYPE_PKT, "[Send] End of file", packet);
-	seq++;
-	// 超时重传
-	while (true) {
-		// 设置 fd_set 结构
-		fd_set readfds;
-		FD_ZERO(&readfds);
-		FD_SET(senderSocket, &readfds);
-
-		// 设置超时时间
-		struct timeval timeout;
-		timeout.tv_sec = TIME_OUT_SECS;
-		timeout.tv_usec = 0;
-
-		// 使用 select 函数进行超时检测
-		int ret = select(0, &readfds, NULL, NULL, &timeout);
-		if (ret == 0) {
-			// 超时，进行重传
-			log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
-			sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE + packet->dataLength, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-			log(LogType::LOG_TYPE_PKT, "[Resend]", packet);
-		} else if (ret == SOCKET_ERROR) {
-			// Log
-			log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
-			break;
-		} else {
-			// 有数据可读，进行读取
-			int addrLen = sizeof(recvAddr);
-			recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
-			if (parse_packet(recvBuf, recvLen, recvPacket)) {
-				if (isACK(recvPacket) && recvPacket->ack == seq) {
-					ack = recvPacket->seq + 1;
-					// Log
-					log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-					delete packet; // 释放内存
-					break;
-				}
-				// else {
-				// 	// Log
-				// 	log(LogType::LOG_TYPE_ERROR, "File Sent Error");
-				// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-				// }
-			}
-			// else {
-			// 	// Log
-			// 	// Checksum Error
-			// 	log(LogType::LOG_TYPE_ERROR, "Checksum Error");
-			// 	log(LogType::LOG_TYPE_PKT, "[recv]", recvPacket);
-			// }
-		}
-	}
+	sendPacket(packet);
+	log(LogType::LOG_TYPE_INFO, "[END] File Sent!");
 
 	// 文件传输完成
 	fin.close();
-	log(LogType::LOG_TYPE_INFO, std::format("File {} Sent Successfully!", filePath));
+	log(LogType::LOG_TYPE_INFO, std::format("File `{}` Sent Successfully!", filePath));
 	log(LogType::LOG_TYPE_INFO, std::format("File Length: {} Bytes", fileLen));
 
 	// 在发送文件之后获取当前时间
@@ -420,97 +231,137 @@ void Sender::close() {
 		seq, ack, FIN | ACK,
 		"", 0
 	);
-	sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
+	// 发送数据包
+	send_packet(senderSocket, recvAddr, packet);
 	seq++;
-	// Log
-	log(LogType::LOG_TYPE_PKT, "[Send FIN + ACK]", packet);
+	log(LogType::LOG_TYPE_INFO, "[Send FIN + ACK]");
+	// 超时重传 Timeout Retransmission
+	while (true) {
+		// 设置 fd_set 结构
+		fd_set readfds;
+		FD_ZERO(&readfds);
+		FD_SET(senderSocket, &readfds);
 
-	// 接收 ACK
-	char recvBuf[sizeof(DataPacket)];
-	DataPacket_t recvPacket;
-	int addrLen = sizeof(recvAddr);
-	int recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
-	if (recvLen == SOCKET_ERROR) {
-		// Log
-		log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
-		log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
-	}
-	if (parse_packet(recvBuf, recvLen, recvPacket)) {
-		if (isACK(recvPacket) && ack == recvPacket->seq) {
-			// ack = recvPacket->seq + 1; 无需增加 ack
+		// 设置超时时间
+		struct timeval timeout;
+		timeout.tv_sec = TIME_OUT_SECS;
+		timeout.tv_usec = TIME_OUT_USECS;
+
+		// 使用 select 函数进行超时检测
+		int ret = select(0, &readfds, NULL, NULL, &timeout);
+		if (ret == 0) {
+			// 超时，进行重传
+			log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
+			send_packet(senderSocket, recvAddr, packet);
+			log(LogType::LOG_TYPE_INFO, "[Resend FIN + ACK]");
+		} else if (ret == SOCKET_ERROR) {
 			// Log
-			log(LogType::LOG_TYPE_PKT, "[Recv ACK]", recvPacket);
+			log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
+			closesocket(senderSocket);
+			WSACleanup();
+			exit(1);
+		} else {
+			// 接收 ACK
+			if (recvACK()) {
+				ack--; // 无需增加 ack
+				log(LogType::LOG_TYPE_INFO, "[Recv ACK]");
+				break;
+			}
 		}
-		// else {
-		// 	// Log
-		// 	log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-		// 	closesocket(senderSocket);
-		// 	WSACleanup();
-		// 	exit(1);
-		// }
 	}
-	// else {
-	// 	// Log
-	// 	// Checksum Error
-	// 	log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-	// 	closesocket(senderSocket);
-	// 	WSACleanup();
-	// 	exit(1);
-	// }
+	// 回收内存
+	delete packet;
+
 
 	// 接收 FIN + ACK
-	recvLen = recvfrom(senderSocket, recvBuf, sizeof(DataPacket), 0, (SOCKADDR*)&recvAddr, &addrLen);
-	if (recvLen == SOCKET_ERROR) {
-		// Log
-		log(LogType::LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
-		log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-		closesocket(senderSocket);
-		WSACleanup();
-		exit(1);
+	char recvBuf[sizeof(DataPacket)];
+	DataPacket_t recvPacket;
+	int recvLen = recv_packet(senderSocket, recvAddr, recvPacket);
+	
+	if (recvLen == -1) {
+		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
 	}
-	if (parse_packet(recvBuf, recvLen, recvPacket)) {
-		if (isFIN(recvPacket) && isACK(recvPacket) && ack == recvPacket->seq) {
-			ack = recvPacket->seq + 1;
-			log(LogType::LOG_TYPE_PKT, "[Recv FIN + ACK]", recvPacket);
-		}
-		// else {
-		// 	// Log
-		// 	// cout << "Close Failed!\n";
-		// 	// closesocket(senderSocket);
-		// 	// WSACleanup();
-		// 	// exit(1);
-		// }
-		// log(LogType::LOG_TYPE_PKT, "[Recv FIN + ACK]", recvPacket);
+	if (isFIN(recvPacket) && isACK(recvPacket) && recvPacket->seq == ack) {
+		ack = recvPacket->seq + 1;
+		log(LogType::LOG_TYPE_INFO, "[Recv FIN + ACK]");
 	}
-	// else {
-	// 	// Log
-	// 	// Checksum Error
-	// 	log(LogType::LOG_TYPE_ERROR, "Close Failed!");
-	// 	// cout << "checksum error!\n";
-	// 	closesocket(senderSocket);
-	// 	WSACleanup();
-	// 	exit(1);
-	// }
+	else {
+		log(LogType::LOG_TYPE_INFO, "[FIN + ACK recv failed]");
+	}
+
 
 	// 发送 ACK
-	delete packet; // 释放内存
 	packet = make_packet(
 		senderAddr.sin_addr.s_addr, recvAddr.sin_addr.s_addr,
 		senderAddr.sin_port, recvAddr.sin_port,
 		seq, ack, ACK,
 		"", 0
 	);
-	sendto(senderSocket, (char*)packet, PKT_HEADER_SIZE, 0, (SOCKADDR*)&recvAddr, sizeof(SOCKADDR));
-	seq++;
-	// Log
-	log(LogType::LOG_TYPE_PKT, "[Send ACK]", packet);
+	send_packet(senderSocket, recvAddr, packet);
+	log(LogType::LOG_TYPE_INFO, "[Send ACK]");
 
-	// Log
+
+	// Wavehand Succeed
 	log(LogType::LOG_TYPE_INFO, "Close Sender");
 	log(LogType::LOG_TYPE_INFO, "Wavehand Succeed!");
+}
+
+void Sender::sendPacket(DataPacket_t packet) {
+	// 发送数据包
+	send_packet(senderSocket, recvAddr, packet);
+	seq += packet->dataLength;
+	if (packet->dataLength == 0) {
+		seq++; // END, SYN, FIN, ACK 等 `空`包需增加 seq
+	}
+	// 超时重传 Timeout Retransmission
+	while (true) {
+		// 设置 fd_set 结构
+		fd_set readfds;
+		FD_ZERO(&readfds);
+		FD_SET(senderSocket, &readfds);
+
+		// 设置超时时间
+		struct timeval timeout;
+		timeout.tv_sec = TIME_OUT_SECS;
+		timeout.tv_usec = TIME_OUT_USECS;
+
+		// 使用 select 函数进行超时检测
+		int ret = select(0, &readfds, NULL, NULL, &timeout);
+		if (ret == 0) {
+			// 超时，进行重传
+			log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
+			send_packet(senderSocket, recvAddr, packet);
+		} else if (ret == SOCKET_ERROR) {
+			// Log
+			log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
+			closesocket(senderSocket);
+			WSACleanup();
+			exit(1);
+		} else {
+			// 有数据可读，进行读取
+			if (recvACK()) {
+				break;
+			}
+		}
+	}
+	// 回收内存
+	delete packet;
+}
+
+bool Sender::recvACK() { // 接收 ACK
+	DataPacket_t recvPacket;
+	int recvLen = recv_packet(senderSocket, recvAddr, recvPacket);
+	if (recvLen == -1) {
+		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
+		return false;
+	}
+	if (isACK(recvPacket) && recvPacket->seq == ack) {
+		ack = recvPacket->seq + 1;
+		log(LogType::LOG_TYPE_INFO, "[ACK recv succeed]");
+		return true;
+	}
+	log(LogType::LOG_TYPE_INFO, "[ACK recv failed]");
+	return false;
 }
 
 
