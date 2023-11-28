@@ -20,4 +20,6 @@ public:
 	void start(); // 开始接收
 	void recvFile(const char* filePath); // 接收文件
 	void close(); // 关闭接收端
+	void sendACK(DataPacket_t packet); // 发送 ACK
+	bool recvPacket(DataPacket_t& packet); // 接收数据包
 };

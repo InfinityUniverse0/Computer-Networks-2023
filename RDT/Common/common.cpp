@@ -84,7 +84,58 @@ bool parse_packet(char* dataPacket, int packetLen, DataPacket_t& packet) {
     return false;
 }
 
-// here
+void send_packet(SOCKET sock, SOCKADDR_IN addr, DataPacket_t packet) {
+    /*
+     * 发送数据包
+     * Args:
+     *      @sock: 套接字
+     *      @addr: 目标地址
+     *      @packet: 数据包
+     */
+    int packetLen = PKT_HEADER_SIZE + packet->dataLength;
+    if (sendto(sock, (char*)packet, packetLen, 0, (SOCKADDR*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        log(LOG_TYPE_ERROR, std::format("sendto() failed with error: {}", WSAGetLastError()));
+        closesocket(sock);
+        WSACleanup();
+        exit(1);
+    }
+    log(LOG_TYPE_PKT, "[Send]", packet);
+}
+
+int recv_packet(SOCKET sock, SOCKADDR_IN& addr, DataPacket_t& packet) {
+    /*
+     * 接收数据包
+     * Args:
+     *      @sock: 套接字
+     *      @addr: 发送方地址
+     *      @packet: 解析出的数据包
+     * Return:
+     *      return packet length if packet is NOT corrupt
+     *      return -1 if packet is corrupt
+     */
+    int addrLen = sizeof(addr);
+    char* dataPacket = new char[sizeof(DataPacket)];
+    // char dataPacket[sizeof(DataPacket)];
+    int packetLen = recvfrom(sock, dataPacket, sizeof(DataPacket), 0, (SOCKADDR*)&addr, &addrLen);
+    if (packetLen == SOCKET_ERROR) {
+        log(LOG_TYPE_ERROR, std::format("recvfrom() failed with error: {}", WSAGetLastError()));
+        closesocket(sock);
+        WSACleanup();
+        exit(1);
+    }
+    if (packetLen == 0) {
+        log(LOG_TYPE_INFO, "recvfrom() failed: connection closed");
+        closesocket(sock);
+        WSACleanup();
+        exit(1);
+    }
+    bool notCorrupt = parse_packet(dataPacket, packetLen, packet);
+    log(LOG_TYPE_PKT, "[Recv]", packet);
+    if (notCorrupt)
+        return packetLen;
+    return -1;
+}
+
 // 判断消息类型
 bool isBEG(DataPacket_t packet) {
     return (packet->flags & BEG);

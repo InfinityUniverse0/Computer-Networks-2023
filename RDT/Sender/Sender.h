@@ -1,11 +1,11 @@
 ﻿#pragma once
 #include "common.h"
-#include <chrono> // 计时
 using namespace std;
 
 #define DEFAULT_SERVER_IP "127.0.0.1" // 默认服务器 IP 地址
 #define DEFAULT_SERVER_PORT 8888 // 默认服务器端口号（实则为路由器端口）
 #define TIME_OUT_SECS 1 // 超时时间（秒）
+#define TIME_OUT_USECS 0 // 超时时间（微秒）
 
 class Sender {
 	const char* serverIP; // 服务器 IP
@@ -25,4 +25,6 @@ public:
 	void connect(); // 连接服务器
 	void sendFile(const char* filePath); // 发送文件
 	void close(); // 关闭发送端
+	void sendPacket(DataPacket_t packet); // 发送数据包
+	bool recvACK(); // 接收 ACK
 };
