@@ -470,7 +470,10 @@ bool in_window_interval(unsigned int seq, unsigned int base, unsigned int window
 
 int main() {
 	Sender sender;
-	sender.init(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT);
+	unsigned int windowSize; // 窗口大小
+	cout << "Input window size: ";
+	cin >> windowSize;
+	sender.init(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT, windowSize);
 	string filePath;
 	cout << "Input file path: ";
 	while (cin >> filePath) {
