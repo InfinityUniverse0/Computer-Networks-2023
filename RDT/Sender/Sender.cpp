@@ -14,76 +14,6 @@ Sender::Sender() {
 		WSACleanup();
 		exit(1);
 	}
-
-	// 初始化计时器
-	timerRunning = false;
-	timerThread = thread([&]() {
-		while (true) {
-			if (timerRunning) {
-				// 设置 fd_set 结构
-				fd_set readfds;
-				FD_ZERO(&readfds);
-				FD_SET(senderSocket, &readfds);
-
-				// 设置超时时间
-				struct timeval timeout;
-				timeout.tv_sec = TIME_OUT_SECS;
-				timeout.tv_usec = TIME_OUT_USECS;
-
-				// 使用 select 函数进行超时检测
-				int ret = select(0, &readfds, NULL, NULL, &timeout);
-				if (ret == 0) {
-					// 超时，进行重传
-					log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
-					// 遍历窗口，重传所有未确认的数据包
-					for (auto it = window.begin(); it != window.end(); it++) {
-						send_packet(senderSocket, recvAddr, *it);
-					}
-				}
-				else if (ret == SOCKET_ERROR) {
-					// Log
-					log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
-					closesocket(senderSocket);
-					WSACleanup();
-					exit(1);
-				}
-				else {
-					// 有数据可读，进行读取
-					char recvBuf[sizeof(DataPacket)];
-					DataPacket_t recvPacket;
-					int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
-					if (recvLen == -1) {
-						log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
-						continue;
-					}
-					if (isACK(recvPacket)) {
-						if (in_window_interval(recvPacket->ack, this->base + 1, windowSize)) {
-							// ack = recvPacket->seq + 1;
-							log(LogType::LOG_TYPE_INFO, "[ACK recv succeed]");
-
-							// 从窗口中移除已确认的数据包
-							while (!window.empty() && in_window_interval(
-								window.front()->seq, this->base, (recvPacket->ack - this->base)
-							)) {
-								delete window.front(); // 回收内存
-								window.pop_front();
-							}
-							// 更新 base
-							this->base = recvPacket->ack;
-
-							if ((!window.empty()) && (this->base == window.back()->seq + 1)) {
-								// 重置计时器
-								timerRunning = false;
-							}
-						}
-					}
-					else {
-						log(LogType::LOG_TYPE_INFO, "[ACK recv failed]");
-					}
-				}
-			}
-		}
-	});
 }
 
 Sender::~Sender() {
@@ -141,6 +71,9 @@ void Sender::init(const char* serverIP, unsigned short serverPort, unsigned int 
 	}
 	// cout << "Receiver IP: " << inet_ntoa(recvAddr.sin_addr) << endl;
 	log(LogType::LOG_TYPE_INFO, std::format("Receiver Port: {}", ntohs(recvAddr.sin_port)));
+
+	log(LogType::LOG_TYPE_INFO, "Sliding Window Protocol");
+	log(LogType::LOG_TYPE_INFO, std::format("Window Size: {}", windowSize));
 }
 
 void Sender::connect() {
@@ -149,7 +82,91 @@ void Sender::connect() {
 	ack = 0;
 	this->base = 2; // base = 2，因为 0 和 1 已经被用于握手
 
+
+	// 初始化计时器
 	timerRunning = false;
+	timerStop = false;
+	/* 计时器线程启动 */
+	timerThread = thread([&]() {
+		while (true) {
+			if (timerRunning) {
+				// 设置 fd_set 结构
+				fd_set readfds;
+				FD_ZERO(&readfds);
+				FD_SET(senderSocket, &readfds);
+
+				// 设置超时时间
+				struct timeval timeout;
+				timeout.tv_sec = TIME_OUT_SECS;
+				timeout.tv_usec = TIME_OUT_USECS;
+
+				// 使用 select 函数进行超时检测
+				int ret = select(0, &readfds, NULL, NULL, &timeout);
+				if (ret == 0) {
+					// 超时，进行重传
+					log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
+					// 遍历窗口，重传所有未确认的数据包
+					for (auto it = window.begin(); it != window.end(); it++) {
+						send_packet(senderSocket, recvAddr, *it);
+					}
+				}
+				else if (ret == SOCKET_ERROR) {
+					// Log
+					log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
+					closesocket(senderSocket);
+					WSACleanup();
+					exit(1);
+				}
+				else {
+					// 有数据可读，进行读取
+					char recvBuf[sizeof(DataPacket)];
+					DataPacket_t recvPacket;
+					int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
+					if (recvLen == -1) {
+						log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
+						continue;
+					}
+					if (isACK(recvPacket)) {
+						if (in_window_interval(recvPacket->ack, this->base + 1, windowSize)) {
+							// ack = recvPacket->seq + 1;
+							log(LogType::LOG_TYPE_INFO, "[ACK recv succeed]");
+
+							// 从窗口中移除已确认的数据包
+							while (!window.empty() && in_window_interval(
+								window.front()->seq, this->base, (recvPacket->ack - this->base)
+							)) {
+								delete window.front(); // 回收内存
+								window.pop_front();
+							}
+							// 更新 base
+							this->base = recvPacket->ack;
+
+							if ((!window.empty()) && (this->base == window.back()->seq + 1)) {
+								// 重置计时器
+								timerRunning = false;
+								if (timerStop) {
+									// 文件传输完成
+									break;
+								}
+							}
+							if (window.empty()) {
+								// 重置计时器
+								timerRunning = false;
+								if (timerStop) {
+									// 文件传输完成
+									break;
+								}
+							}
+						}
+					}
+					else {
+						log(LogType::LOG_TYPE_INFO, "[ACK recv failed]");
+					}
+				}
+			}
+		}
+	});
+
 
 	// 三次握手（实则只需两次握手）
 	// 发送 SYN
@@ -286,6 +303,9 @@ void Sender::sendFile(const char* filePath) {
 	log(LogType::LOG_TYPE_INFO, "[END] File Sent!");
 
 	// 文件传输完成
+	timerStop = true;
+
+	// 关闭文件
 	fin.close();
 	log(LogType::LOG_TYPE_INFO, std::format("File `{}` Sent Successfully!", filePath));
 	log(LogType::LOG_TYPE_INFO, std::format("File Length: {} Bytes", fileLen));
@@ -297,9 +317,18 @@ void Sender::sendFile(const char* filePath) {
 	log(LogType::LOG_TYPE_INFO, std::format("File transfer time: {} s", diff.count()));
 	// 平均吞吐量
 	log(LogType::LOG_TYPE_INFO, std::format("Average throughput: {} B/s\n", fileLen / diff.count()));
+
+
+	// 计时器线程退出
+	if (timerThread.joinable()) {
+		timerThread.join();
+	}
 }
 
 void Sender::close() {
+	// stop timer
+	timerRunning = false;
+
 	// 四次挥手
 	// 发送 FIN + ACK
 	DataPacket_t packet = make_packet(
@@ -383,8 +412,7 @@ void Sender::close() {
 	log(LogType::LOG_TYPE_INFO, "Wavehand Succeed!");
 
 
-	// 计时器
-	timerRunning = false;
+	// 计时器线程退出
 	// if (timerThread.joinable()) {
 	// 	timerThread.join();
 	// }

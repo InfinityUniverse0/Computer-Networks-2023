@@ -33,6 +33,7 @@ class Sender {
 	// 计时器
 	atomic<bool> timerRunning; // 计时器是否正在运行
 	thread timerThread; // 计时器线程
+	atomic<bool> timerStop; // 计时器是否停止：文件传输完成时为 true
 
 public:
 	Sender();
