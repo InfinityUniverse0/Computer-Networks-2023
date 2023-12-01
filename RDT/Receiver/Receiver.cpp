@@ -301,10 +301,7 @@ bool Receiver::recvPacket(char* buf, int bufLen, DataPacket_t& packet) {
 		return false;
 	}
 	if (packet->seq == ack) {
-		ack += packet->dataLength;
-		if (packet->dataLength == 0) {
-			ack++; // END, SYN, FIN, ACK 等 `空`包需增加 ack
-		}
+		ack++; // ack加1，无需增加数据长度
 		return true;
 	}
 	log(LogType::LOG_TYPE_INFO, "ACK not matched!");

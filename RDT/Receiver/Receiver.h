@@ -13,6 +13,8 @@ class Receiver {
 	SOCKET recvSocket; // 接收套接字
 	SOCKADDR_IN recvAddr; // 接收方地址
 	SOCKADDR_IN senderAddr; // 发送方地址
+
+	// unsigned int expectedACK; // 期望 ACK
 public:
 	Receiver();
 	~Receiver();
