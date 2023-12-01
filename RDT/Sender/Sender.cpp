@@ -309,6 +309,12 @@ void Sender::sendFile(const char* filePath) {
 
 	// 关闭文件
 	fin.close();
+
+	// 计时器线程退出
+	if (timerThread.joinable()) {
+		timerThread.join();
+	}
+	
 	log(LogType::LOG_TYPE_INFO, std::format("File `{}` Sent Successfully!", filePath));
 	log(LogType::LOG_TYPE_INFO, std::format("File Length: {} Bytes", fileLen));
 
@@ -319,12 +325,6 @@ void Sender::sendFile(const char* filePath) {
 	log(LogType::LOG_TYPE_INFO, std::format("File transfer time: {} s", diff.count()));
 	// 平均吞吐量
 	log(LogType::LOG_TYPE_INFO, std::format("Average throughput: {} B/s\n", fileLen / diff.count()));
-
-
-	// 计时器线程退出
-	if (timerThread.joinable()) {
-		timerThread.join();
-	}
 }
 
 void Sender::close() {
