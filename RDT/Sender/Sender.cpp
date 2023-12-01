@@ -106,6 +106,7 @@ void Sender::connect() {
 					// 超时，进行重传
 					log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
 					// 遍历窗口，重传所有未确认的数据包
+					lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
 					for (auto it = window.begin(); it != window.end(); it++) {
 						send_packet(senderSocket, recvAddr, *it);
 					}
@@ -132,6 +133,7 @@ void Sender::connect() {
 							log(LogType::LOG_TYPE_INFO, "[ACK recv succeed]");
 
 							// 从窗口中移除已确认的数据包
+							lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
 							while (!window.empty() && in_window_interval(
 								window.front()->seq, this->base, (recvPacket->ack - this->base)
 							)) {
@@ -419,13 +421,14 @@ void Sender::close() {
 }
 
 void Sender::sendPacket(DataPacket_t packet) {
-	while (true) {
+	while (true) { // 阻塞直到发送成功
 		if (in_window_interval(packet->seq, this->base, windowSize)) {
 			// 发送数据包
 			send_packet(senderSocket, recvAddr, packet);
 			seq++; // 序列号+1，而不是增加数据长度
 			ack++; // 增加 ack
 			// 添加到窗口
+			lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
 			window.push_back(packet);
 
 			if (packet->seq == this->base) {
