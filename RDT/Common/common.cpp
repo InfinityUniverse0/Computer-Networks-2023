@@ -176,8 +176,11 @@ void die(const char* msg) {
     exit(1);
 }
 
+
+std::mutex logMutex; // Log Mutex
 // Log
 void log(LogType type, const std::string& msg, DataPacket_t packet, bool showTime) {
+    std::lock_guard<std::mutex> lock(logMutex); // 加锁，生命周期结束后自动解锁
     if (showTime) {
         // 获取并输出当前时间
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
@@ -210,6 +213,24 @@ void log(LogType type, const std::string& msg, DataPacket_t packet, bool showTim
     case LOG_TYPE_PKT:
         SetConsoleTextAttribute(hConsole, FOREGROUND_GREEN); // Green
         std::cout << "[PKT] " << msg << std::endl;
+        SetConsoleTextAttribute(hConsole, FOREGROUND_BLUE | FOREGROUND_INTENSITY); // Intense Blue
+        {
+            if (packet->flags)
+                std::cout << "    ";
+            if (isBEG(packet))
+                std::cout << "BEG ";
+            if (isEND(packet))
+                std::cout << "END ";
+            if (isSYN(packet))
+                std::cout << "SYN ";
+            if (isFIN(packet))
+                std::cout << "FIN ";
+            if (isACK(packet))
+                std::cout << "ACK ";
+            
+            if (packet->flags)
+                std::cout << std::endl;
+        }
         // Reset to default color
         SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         // std::cout << "    srcIP: " << packet->srcIP << std::endl;

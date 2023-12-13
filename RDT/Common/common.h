@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <sstream>
 #include <deque> // 双端队列
+#include <mutex> // 互斥量
 
 #pragma comment(lib, "ws2_32.lib") // 链接 ws2_32.lib 库文件到此项目中
 
