@@ -1,4 +1,5 @@
 ﻿#include "Receiver.h"
+#include <assert.h>
 
 Receiver::Receiver() {
 	// 初始化 WinSock
@@ -26,9 +27,10 @@ Receiver::~Receiver() {
 	log(LogType::LOG_TYPE_INFO, "WinSock Closed!");
 }
 
-void Receiver::init(const char* serverIP, unsigned short serverPort) {
+void Receiver::init(const char* serverIP, unsigned short serverPort, unsigned int windowSize) {
 	this->serverIP = serverIP;
 	this->serverPort = serverPort;
+	this->windowSize = windowSize;
 
 	// Create socket
 	recvSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -54,12 +56,15 @@ void Receiver::init(const char* serverIP, unsigned short serverPort) {
 	// Log
 	log(LogType::LOG_TYPE_INFO, std::format("Receiver IP: {}", serverIP));
 	log(LogType::LOG_TYPE_INFO, std::format("Receiver Port: {}", serverPort));
+
+	log(LogType::LOG_TYPE_INFO, std::format("Window Size: {}", windowSize));
 }
 
 void Receiver::start() {
 	// 初始化序列号
 	seq = 0;
 	ack = 0;
+	this->base = 3; // base = 3，因为 0 和 1 已经被用于握手，2 已经用于接收 BEG
 
 	// 三次握手
 	char recvBuf[sizeof(DataPacket)];
@@ -115,9 +120,8 @@ void Receiver::start() {
 
 
 	// 接收文件名
-	// DataPacket_t recvPacket;
 	while (true) {
-		if (this->recvPacket(recvBuf, sizeof(DataPacket), recvPacket)) {
+		if (recv_packet(recvSocket, senderAddr, recvBuf, sizeof(DataPacket), recvPacket) != -1) {
 			if (isBEG(recvPacket)) {
 				log(LogType::LOG_TYPE_INFO, "[Recv BEG]");
 				log(LogType::LOG_TYPE_INFO, std::format("Start Receiving File `{}`!", recvPacket->data));
@@ -125,24 +129,16 @@ void Receiver::start() {
 				DataPacket_t ackPacket = make_packet(
 					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
 					recvAddr.sin_port, senderAddr.sin_port,
-					seq, ack, ACK,
+					seq, (recvPacket->seq + 1), ACK,
 					"", 0
 				);
 				this->sendACK(ackPacket);
 				delete ackPacket; // 回收内存
+
+				// 更新 ack
+				this->ack = recvPacket->seq + 1;
 				break;
 			}
-		}
-		else {
-			// 重发上次 ACK
-			DataPacket_t ackPacket = make_packet(
-				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
-				recvAddr.sin_port, senderAddr.sin_port,
-				--seq, ack, ACK,
-				"", 0
-			);
-			this->sendACK(ackPacket);
-			delete ackPacket; // 回收内存
 		}
 	}
 
@@ -160,65 +156,58 @@ void Receiver::recvFile(const char* filePath) {
 		log(LogType::LOG_TYPE_ERROR, std::format("Failed to open file `{}`", filePath));
 		return;
 	}
+
 	// 接收数据
-	char recvBuf[sizeof(DataPacket)];
-	DataPacket_t recvPacket;
+	bool recvEND = false;
 	while (true) {
-		if (this->recvPacket(recvBuf, sizeof(DataPacket), recvPacket)) {
-			if (isEND(recvPacket)) {
-				log(LogType::LOG_TYPE_INFO, "[Recv END]");
-				// 发送 ACK
-				DataPacket_t ackPacket = make_packet(
-					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
-					recvAddr.sin_port, senderAddr.sin_port,
-					seq, ack, ACK,
-					"", 0
-				);
-				this->sendACK(ackPacket);
-				delete ackPacket; // 回收内存
-				// 关闭文件
-				fout.close();
-				// Log
-				log(LogType::LOG_TYPE_INFO, std::format("Receive File `{}` Succeed!", filePath));
-				break;
-			}
-			else {
-				// 发送 ACK
-				DataPacket_t ackPacket = make_packet(
-					recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
-					recvAddr.sin_port, senderAddr.sin_port,
-					seq, ack, ACK,
-					"", 0
-				);
-				this->sendACK(ackPacket);
-				delete ackPacket; // 回收内存
-				// 写入文件
-				fout.write(recvPacket->data, recvPacket->dataLength);
-				if (!fout) {
-					log(LogType::LOG_TYPE_ERROR, "Failed to write to file");
-					// Need to close socket?
-					closesocket(recvSocket);
-					WSACleanup();
-					exit(1);
-				}
-			}
+		if (recvEND) {
+			fout.close(); // 关闭文件
+			log(LogType::LOG_TYPE_INFO, std::format("Receive File `{}` Succeed!", filePath));
+			assert(window.empty());
+			break;
 		}
-		else {
-			// 重发上次 ACK
-			DataPacket_t ackPacket = make_packet(
-				recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
-				recvAddr.sin_port, senderAddr.sin_port,
-				--seq, ack, ACK,
-				"", 0
-			);
-			this->sendACK(ackPacket);
-			delete ackPacket; // 回收内存
+		if (this->recvPacket()) { // 准备写入文件
+			auto it = window.begin();
+			while (!window.empty() && (it != window.end()) && (*it != nullptr)) {
+				// Debug
+				log(LogType::LOG_TYPE_ERROR, std::format("seq: {}, ack: {}, base: {}", (*it)->seq, (*it)->ack, base));
+				if (isEND(*it)) {
+					log(LogType::LOG_TYPE_INFO, "[Recv END]");
+					recvEND = true;
+					delete window.front(); // 回收内存
+					window.pop_front();
+					// 更新 base
+					(this->base)++;
+					break;
+				}
+				else {
+					// 写入文件
+					fout.write((*it)->data, (*it)->dataLength);
+					if (!fout) {
+						log(LogType::LOG_TYPE_ERROR, "Failed to write to file");
+						// Need to close socket?
+						closesocket(recvSocket);
+						WSACleanup();
+						exit(1);
+					}
+				}
+
+				// 前移滑动窗口
+				it++;
+				delete window.front(); // 回收内存
+				window.pop_front();
+				// 更新 base
+				(this->base)++;
+			}
 		}
 	}
 }
 
 void Receiver::close() {
 	// 四次挥手
+
+	// Debug
+	log(LogType::LOG_TYPE_ERROR, std::format("start close!"));
 	
 	// 接收 FIN + ACK
 	char recvBuf[sizeof(DataPacket)];
@@ -294,17 +283,87 @@ void Receiver::sendACK(DataPacket_t packet) {
 	seq++;
 }
 
-bool Receiver::recvPacket(char* buf, int bufLen, DataPacket_t& packet) {
-	int recvLen = recv_packet(recvSocket, senderAddr, buf, bufLen, packet);
+bool Receiver::recvPacket() {
+	/*
+	 * 接收数据包
+	 * Return:
+	 * 		当可以写入文件时，return true
+	 */
+	DataPacket_t packet = new DataPacket;
+	char* buf = (char*)packet;
+	int recvLen = recv_packet(recvSocket, senderAddr, buf, sizeof(DataPacket), packet);
 	if (recvLen == -1) {
 		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
 		return false;
 	}
-	if (packet->seq == ack) {
-		ack++; // ack加1，无需增加数据长度
-		return true;
+
+	// 判断是否位于窗口区间
+	if (in_window_interval(packet->seq, this->base, windowSize)) {
+		// 发送 ACK
+		DataPacket_t ackPacket = make_packet(
+			recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
+			recvAddr.sin_port, senderAddr.sin_port,
+			seq, (packet->seq + 1), ACK,
+			"", 0
+		);
+		this->sendACK(ackPacket);
+		delete ackPacket; // 回收内存
+
+		// 更新 ack
+		if (in_window_interval(packet->seq + 1, this->ack, windowSize)) {
+			this->ack = packet->seq + 1;
+		}
+
+		if (packet->seq == this->base) {
+			// Debug
+			log(LogType::LOG_TYPE_ERROR, "Ready to write to file");
+			log(LogType::LOG_TYPE_ERROR, std::format("seq: {}, ack: {}, base: {}", packet->seq, packet->ack, base));
+			if (window.empty()) {
+				window.push_back(packet);
+			}
+			else {
+				DataPacket_t winPkt = window.front();
+				if (winPkt == nullptr) {
+					winPkt = packet;
+				}
+			}
+			// 可以写入文件
+			return true;
+		}
+		else { // 写入窗口
+			if (window.empty()) { // window 为空
+				window.push_back(nullptr);
+			}
+			unsigned int index = get_window_index(packet->seq, this->base);
+			while (window.size() < index) {
+				window.push_back(nullptr);
+			}
+			if (window.size() == index) {
+				window.push_back(packet);
+			}
+			else {
+				DataPacket_t winPkt = window.at(index);
+				if (winPkt == nullptr) { // 之前未收到
+					winPkt = packet; // 将 nullptr 改为 packet
+				}
+			}
+
+			// Debug
+			log(LogType::LOG_TYPE_ERROR, "Write to window");
+		}
 	}
-	log(LogType::LOG_TYPE_INFO, "ACK not matched!");
+	else { // 位于 [base-windowSize, base) 区间
+		// 发送 ACK
+		DataPacket_t ackPacket = make_packet(
+			recvAddr.sin_addr.s_addr, senderAddr.sin_addr.s_addr,
+			recvAddr.sin_port, senderAddr.sin_port,
+			packet->ack, (packet->seq + 1), ACK,
+			"", 0
+		);
+		this->sendACK(ackPacket);
+		delete ackPacket; // 回收内存
+	}
+
 	return false;
 }
 

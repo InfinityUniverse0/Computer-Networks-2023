@@ -249,3 +249,14 @@ void log(LogType type, const std::string& msg, DataPacket_t packet, bool showTim
         break;
     }
 }
+
+
+bool in_window_interval(unsigned int seq, unsigned int base, unsigned int windowSize) {
+	if (base + windowSize < base) {
+		// 溢出
+		return ((seq >= base) || (seq < base + windowSize));
+	}
+	else {
+		return ((seq >= base) && (seq < base + windowSize));
+	}
+}

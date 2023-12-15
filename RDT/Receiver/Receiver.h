@@ -14,14 +14,17 @@ class Receiver {
 	SOCKADDR_IN recvAddr; // 接收方地址
 	SOCKADDR_IN senderAddr; // 发送方地址
 
-	// unsigned int expectedACK; // 期望 ACK
+	unsigned int windowSize; // 窗口大小
+	unsigned int base; // 窗口基序号
+	deque<DataPacket_t> window; // 接收窗口
+
 public:
 	Receiver();
 	~Receiver();
-	void init(const char* serverIP, unsigned short serverPort); // 初始化
+	void init(const char* serverIP, unsigned short serverPort, unsigned int windowSize = DEFAULT_WINDOW_SIZE); // 初始化
 	void start(); // 开始接收
 	void recvFile(const char* filePath); // 接收文件
 	void close(); // 关闭接收端
 	void sendACK(DataPacket_t packet); // 发送 ACK
-	bool recvPacket(char* buf, int bufLen, DataPacket_t& packet); // 接收数据包
+	bool recvPacket(); // 接收数据包
 };

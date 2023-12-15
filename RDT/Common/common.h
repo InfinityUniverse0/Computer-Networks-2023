@@ -17,6 +17,8 @@
 
 #pragma comment(lib, "ws2_32.lib") // 链接 ws2_32.lib 库文件到此项目中
 
+#define DEFAULT_WINDOW_SIZE 10 // 默认窗口大小
+
 /*
 Data Packet Format:
 +-------------------------------------+
@@ -112,3 +114,13 @@ enum LogType {
 };
 
 void log(LogType type, const std::string& msg, DataPacket_t packet = nullptr, bool showTime = true);
+
+
+/* 辅助函数 */
+// 判断是否位于窗口区间
+bool in_window_interval(unsigned int seq, unsigned int base, unsigned int windowSize);
+// 获取数据包对应的 window 索引
+inline unsigned int get_window_index(unsigned int seq, unsigned int base) {
+	// 无论是否溢出
+	return (seq - base);
+}

@@ -83,93 +83,6 @@ void Sender::connect() {
 	this->base = 2; // base = 2，因为 0 和 1 已经被用于握手
 
 
-	// 初始化计时器
-	timerRunning = false;
-	timerStop = false;
-	/* 计时器线程启动 */
-	timerThread = thread([&]() {
-		while (true) {
-			if (timerRunning) {
-				// 设置 fd_set 结构
-				fd_set readfds;
-				FD_ZERO(&readfds);
-				FD_SET(senderSocket, &readfds);
-
-				// 设置超时时间
-				struct timeval timeout;
-				timeout.tv_sec = TIME_OUT_SECS;
-				timeout.tv_usec = TIME_OUT_USECS;
-
-				// 使用 select 函数进行超时检测
-				int ret = select(0, &readfds, NULL, NULL, &timeout);
-				if (ret == 0) {
-					// 超时，进行重传
-					log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
-					// 遍历窗口，重传所有未确认的数据包
-					lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
-					for (auto it = window.begin(); it != window.end(); it++) {
-						send_packet(senderSocket, recvAddr, *it);
-					}
-				}
-				else if (ret == SOCKET_ERROR) {
-					// Log
-					log(LogType::LOG_TYPE_ERROR, std::format("select function failed with error: {}", WSAGetLastError()));
-					closesocket(senderSocket);
-					WSACleanup();
-					exit(1);
-				}
-				else {
-					// 有数据可读，进行读取
-					char recvBuf[sizeof(DataPacket)];
-					DataPacket_t recvPacket;
-					int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
-					if (recvLen == -1) {
-						log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
-						continue;
-					}
-					if (isACK(recvPacket)) {
-						if (in_window_interval(recvPacket->ack, this->base + 1, windowSize)) {
-							// ack = recvPacket->seq + 1;
-							log(LogType::LOG_TYPE_INFO, "[ACK recv succeed]");
-
-							// 从窗口中移除已确认的数据包
-							lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
-							while (!window.empty() && in_window_interval(
-								window.front()->seq, this->base, (recvPacket->ack - this->base)
-							)) {
-								delete window.front(); // 回收内存
-								window.pop_front();
-							}
-							// 更新 base
-							this->base = recvPacket->ack;
-
-							if ((!window.empty()) && (this->base == window.back()->seq + 1)) {
-								// 重置计时器
-								timerRunning = false;
-								if (timerStop) {
-									// 文件传输完成
-									break;
-								}
-							}
-							if (window.empty()) {
-								// 重置计时器
-								timerRunning = false;
-								if (timerStop) {
-									// 文件传输完成
-									break;
-								}
-							}
-						}
-					}
-					else {
-						log(LogType::LOG_TYPE_INFO, "[ACK recv failed]");
-					}
-				}
-			}
-		}
-	});
-
-
 	// 三次握手（实则只需两次握手）
 	// 发送 SYN
 	DataPacket_t packet = make_packet(
@@ -245,6 +158,13 @@ void Sender::connect() {
 }
 
 void Sender::sendFile(const char* filePath) {
+	// 初始化 recvThread
+	recvRunning = true;
+	recvThread = thread(std::bind(&Sender::recvThreadFunc, this));
+	// recvThread = thread([&]() {
+		
+	// });
+
 	log(LogType::LOG_TYPE_INFO, std::format("Start Sending File `{}`!", filePath));
 	// 在发送文件之前获取当前时间
     auto start = std::chrono::high_resolution_clock::now();
@@ -305,14 +225,14 @@ void Sender::sendFile(const char* filePath) {
 	log(LogType::LOG_TYPE_INFO, "[END] File Sent!");
 
 	// 文件传输完成
-	timerStop = true;
+	recvRunning = false;
 
 	// 关闭文件
 	fin.close();
 
-	// 计时器线程退出
-	if (timerThread.joinable()) {
-		timerThread.join();
+	// 接收数据包线程退出
+	if (recvThread.joinable()) {
+		recvThread.join();
 	}
 	
 	log(LogType::LOG_TYPE_INFO, std::format("File `{}` Sent Successfully!", filePath));
@@ -328,9 +248,6 @@ void Sender::sendFile(const char* filePath) {
 }
 
 void Sender::close() {
-	// stop timer
-	timerRunning = false;
-
 	// 四次挥手
 	// 发送 FIN + ACK
 	DataPacket_t packet = make_packet(
@@ -412,12 +329,6 @@ void Sender::close() {
 	// Wavehand Succeed
 	log(LogType::LOG_TYPE_INFO, "Close Sender");
 	log(LogType::LOG_TYPE_INFO, "Wavehand Succeed!");
-
-
-	// 计时器线程退出
-	// if (timerThread.joinable()) {
-	// 	timerThread.join();
-	// }
 }
 
 void Sender::sendPacket(DataPacket_t packet) {
@@ -427,19 +338,93 @@ void Sender::sendPacket(DataPacket_t packet) {
 			send_packet(senderSocket, recvAddr, packet);
 			seq++; // 序列号+1，而不是增加数据长度
 			ack++; // 增加 ack
-			// 添加到窗口
-			lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
-			window.push_back(packet);
-
-			if (packet->seq == this->base) {
-				timerRunning = true; // set timer
+			{
+				// 添加到窗口
+				lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
+				window.push_back(packet);
+				ackWindow.push_back(false);
 			}
+
+			/* 计时器线程启动 */
+			std::thread* timer = new std::thread(std::bind(&Sender::timerThreadFunc, this, packet->seq));
+			this->timerThreads.push_back(timer);
+
+			// Debug
+			static unsigned int a = 0;
+			a++;
+			log(LogType::LOG_TYPE_ERROR, std::format("a = {}", a));
+
 			break;
 		}
+		// else { // 接收数据包
+		// 	// Debug
+		// 	log(LogType::LOG_TYPE_ERROR, "Start Receiving Packet!");
+
+		// 	char recvBuf[sizeof(DataPacket)];
+		// 	DataPacket_t recvPacket;
+		// 	int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
+		// 	if (recvLen == -1) {
+		// 		log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
+		// 		continue;
+		// 	}
+
+		// 	// Debug
+		// 	// log(LogType::LOG_TYPE_ERROR, std::format("Recv Thread Still Running!"));
+
+		// 	// 用于计时器线程防止死锁
+		// 	unsigned int count = 0;
+		// 	if (isACK(recvPacket)) {
+		// 		lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
+		// 		if (in_window_interval(recvPacket->ack, this->base + 1, windowSize)) {
+		// 			// ack = recvPacket->seq + 1;
+		// 			log(LogType::LOG_TYPE_INFO, "[ACK recv succeed]");
+
+		// 			// 是否是窗口的开头
+		// 			if (recvPacket->ack == this->base + 1) { // 是，则前移滑动窗口
+		// 				ackWindow.front() = true;
+		// 				while (!window.empty() && (ackWindow.front() == true)) {
+		// 					delete window.front(); // 回收内存
+		// 					window.pop_front();
+		// 					ackWindow.pop_front();
+		// 					// 更新 base
+		// 					(this->base)++;
+		// 					// 增加 count 计数
+		// 					count++;
+
+		// 					// Debug
+		// 					// log(LogType::LOG_TYPE_ERROR, std::format("count: {}", count));
+		// 				}
+		// 			}
+		// 			else {
+		// 				// 修改对应的 ackWindow
+		// 				ackWindow.at(get_window_index(recvPacket->ack, this->base + 1)) = true;
+		// 			}
+		// 		}
+		// 		else {
+		// 			// Debug
+		// 			// log(LogType::LOG_TYPE_ERROR, std::format("recvPacket->ack: {}", recvPacket->ack));
+		// 		}
+		// 	}
+		// 	else {
+		// 		log(LogType::LOG_TYPE_INFO, "[ACK recv failed]");
+		// 	}
+		// 	// 互斥锁已释放，从而避免死锁
+		// 	for (unsigned int i = 0; i < count; i++) {
+		// 		std::thread* timer = this->timerThreads.front();
+		// 		if (timer->joinable()) {
+		// 			timer->join(); // 等待释放
+		// 		}
+		// 		delete timer; // 回收内存
+		// 		this->timerThreads.pop_front();
+				
+		// 		// Debug
+		// 		log(LogType::LOG_TYPE_ERROR, std::format("Release timer thread!  count: {}", count));
+		// 	}
+		// }
 	}
 }
 
-bool Sender::recvACK() { // 接收 ACK
+bool Sender::recvACK() { // 接收 ACK  /* 目前仅用于挥手 */
 	char recvBuf[sizeof(DataPacket)];
 	DataPacket_t recvPacket;
 	int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
@@ -457,23 +442,120 @@ bool Sender::recvACK() { // 接收 ACK
 }
 
 
-bool in_window_interval(unsigned int seq, unsigned int base, unsigned int windowSize) {
-	if (base + windowSize < base) {
-		// 溢出
-		return ((seq >= base) || (seq < base + windowSize));
+void Sender::timerThreadFunc(unsigned int packet_seq) {
+	while (true) {
+		// sleep
+		std::this_thread::sleep_for(std::chrono::seconds(TIME_OUT_SECS));
+		std::this_thread::sleep_for(std::chrono::microseconds(TIME_OUT_USECS));
+
+		// check if received ACK
+		bool hasACKed = true;
+		{
+			lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
+			auto ack_it = ackWindow.begin();
+			for (auto it = window.begin(); it != window.end(); it++) {
+				// Debug
+				// log(LogType::LOG_TYPE_ERROR, std::format("packet->seq: {}", packet->seq));
+				if ((*it)->seq == packet_seq) { // found
+					if (*ack_it == false) { // ack NOT received
+						hasACKed = false;
+						// 超时重传
+						log(LogType::LOG_TYPE_INFO, "Time out! Resend packet!");
+						// 重发数据包
+						send_packet(senderSocket, recvAddr, (*it));
+					}
+					break;
+				}
+				ack_it++;
+			}
+		}
+		if (hasACKed)
+			break; // 结束线程
 	}
-	else {
-		return ((seq >= base) && (seq < base + windowSize));
+}
+
+void Sender::recvThreadFunc() {
+	while (true) {
+		if ((recvRunning == false) && window.empty())
+			break; // 结束线程
+		char recvBuf[sizeof(DataPacket)];
+		DataPacket_t recvPacket;
+
+		// Debug
+		log(LogType::LOG_TYPE_ERROR, "Start Receiving Packet!");
+		
+		int recvLen = recv_packet(senderSocket, recvAddr, recvBuf, sizeof(DataPacket), recvPacket);
+		if (recvLen == -1) {
+			log(LogType::LOG_TYPE_ERROR, "recv_packet() failed: checksum error");
+			continue;
+		}
+
+		// Debug
+		log(LogType::LOG_TYPE_ERROR, std::format("Recv Thread Still Running!"));
+
+		// 用于计时器线程防止死锁
+		unsigned int count = 0;
+		if (isACK(recvPacket)) {
+			lock_guard<mutex> lock(windowMutex); // 加锁，生命周期结束后自动解锁
+			if (in_window_interval(recvPacket->ack, this->base + 1, windowSize)) {
+				// ack = recvPacket->seq + 1;
+				log(LogType::LOG_TYPE_INFO, "[ACK recv succeed]");
+
+				// 是否是窗口的开头
+				if (recvPacket->ack == this->base + 1) { // 是，则前移滑动窗口
+					ackWindow.front() = true;
+					while (!window.empty() && (ackWindow.front() == true)) {
+						delete window.front(); // 回收内存
+						window.pop_front();
+						ackWindow.pop_front();
+						// 更新 base
+						(this->base)++;
+						// 增加 count 计数
+						count++;
+
+						// Debug
+						log(LogType::LOG_TYPE_ERROR, std::format("count: {}", count));
+					}
+				}
+				else {
+					// 修改对应的 ackWindow
+					ackWindow.at(get_window_index(recvPacket->ack, this->base + 1)) = true;
+				}
+			}
+			else {
+				// Debug
+				log(LogType::LOG_TYPE_ERROR, std::format("recvPacket->ack: {}", recvPacket->ack));
+			}
+		}
+		else {
+			log(LogType::LOG_TYPE_INFO, "[ACK recv failed]");
+		}
+		// 互斥锁已释放，从而避免死锁
+		for (unsigned int i = 0; i < count; i++) {
+			std::thread* timer = this->timerThreads.front();
+			if (timer->joinable()) {
+				timer->join(); // 等待释放
+			}
+			delete timer; // 回收内存
+			this->timerThreads.pop_front();
+			
+			// Debug
+			log(LogType::LOG_TYPE_ERROR, std::format("Release timer thread!  count: {}", count));
+		}
 	}
+
+	// Debug
+	log(LogType::LOG_TYPE_ERROR, std::format("Recv Thread Exit!"));
 }
 
 
 int main() {
 	Sender sender;
-	unsigned int windowSize; // 窗口大小
-	cout << "Input window size: ";
-	cin >> windowSize;
-	sender.init(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT, windowSize);
+	// unsigned int windowSize; // 窗口大小
+	// cout << "Input window size: ";
+	// cin >> windowSize;
+	// sender.init(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT, windowSize);
+	sender.init(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT);
 	string filePath;
 	cout << "Input file path: ";
 	while (cin >> filePath) {
