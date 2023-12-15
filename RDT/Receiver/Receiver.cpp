@@ -167,10 +167,9 @@ void Receiver::recvFile(const char* filePath) {
 			break;
 		}
 		if (this->recvPacket()) { // 准备写入文件
+			unsigned int count = 0;
 			auto it = window.begin();
 			while (!window.empty() && (it != window.end()) && (*it != nullptr)) {
-				// Debug
-				log(LogType::LOG_TYPE_ERROR, std::format("seq: {}, ack: {}, base: {}", (*it)->seq, (*it)->ack, base));
 				if (isEND(*it)) {
 					log(LogType::LOG_TYPE_INFO, "[Recv END]");
 					recvEND = true;
@@ -194,10 +193,14 @@ void Receiver::recvFile(const char* filePath) {
 
 				// 前移滑动窗口
 				it++;
-				delete window.front(); // 回收内存
-				window.pop_front();
+				count++;
 				// 更新 base
 				(this->base)++;
+			}
+
+			for (unsigned int i = 0; i < count; i++) {
+				delete window.front(); // 回收内存
+				window.pop_front();
 			}
 		}
 	}
@@ -205,9 +208,6 @@ void Receiver::recvFile(const char* filePath) {
 
 void Receiver::close() {
 	// 四次挥手
-
-	// Debug
-	log(LogType::LOG_TYPE_ERROR, std::format("start close!"));
 	
 	// 接收 FIN + ACK
 	char recvBuf[sizeof(DataPacket)];
@@ -315,16 +315,13 @@ bool Receiver::recvPacket() {
 		}
 
 		if (packet->seq == this->base) {
-			// Debug
-			log(LogType::LOG_TYPE_ERROR, "Ready to write to file");
-			log(LogType::LOG_TYPE_ERROR, std::format("seq: {}, ack: {}, base: {}", packet->seq, packet->ack, base));
 			if (window.empty()) {
 				window.push_back(packet);
 			}
 			else {
 				DataPacket_t winPkt = window.front();
 				if (winPkt == nullptr) {
-					winPkt = packet;
+					window.front() = packet;
 				}
 			}
 			// 可以写入文件
@@ -344,12 +341,9 @@ bool Receiver::recvPacket() {
 			else {
 				DataPacket_t winPkt = window.at(index);
 				if (winPkt == nullptr) { // 之前未收到
-					winPkt = packet; // 将 nullptr 改为 packet
+					window.at(index) = packet; // 将 nullptr 改为 packet
 				}
 			}
-
-			// Debug
-			log(LogType::LOG_TYPE_ERROR, "Write to window");
 		}
 	}
 	else { // 位于 [base-windowSize, base) 区间
@@ -361,6 +355,7 @@ bool Receiver::recvPacket() {
 			"", 0
 		);
 		this->sendACK(ackPacket);
+		seq--;
 		delete ackPacket; // 回收内存
 	}
 
@@ -377,3 +372,18 @@ int main() {
 	}
 	return 0;
 }
+
+// void Receiver::Print() {
+// 	log(LogType::LOG_TYPE_ERROR, std::format("base: {}", base));
+// 	log(LogType::LOG_TYPE_ERROR, std::format("window.size: {}", window.size()));
+// 	auto it = window.begin();
+// 	while (it != window.end()) {
+// 		if (*it == nullptr) {
+// 			log(LogType::LOG_TYPE_ERROR, "nullptr");
+// 		}
+// 		else {
+// 			log(LogType::LOG_TYPE_ERROR, std::format("seq: {}", (*it)->seq));
+// 		}
+// 		it++;
+// 	}
+// }
