@@ -343,6 +343,9 @@ bool Receiver::recvPacket() {
 				if (winPkt == nullptr) { // 之前未收到
 					window.at(index) = packet; // 将 nullptr 改为 packet
 				}
+				else {
+					this->seq--; // 重复收到，seq 不变
+				}
 			}
 		}
 	}
@@ -372,18 +375,3 @@ int main() {
 	}
 	return 0;
 }
-
-// void Receiver::Print() {
-// 	log(LogType::LOG_TYPE_ERROR, std::format("base: {}", base));
-// 	log(LogType::LOG_TYPE_ERROR, std::format("window.size: {}", window.size()));
-// 	auto it = window.begin();
-// 	while (it != window.end()) {
-// 		if (*it == nullptr) {
-// 			log(LogType::LOG_TYPE_ERROR, "nullptr");
-// 		}
-// 		else {
-// 			log(LogType::LOG_TYPE_ERROR, std::format("seq: {}", (*it)->seq));
-// 		}
-// 		it++;
-// 	}
-// }
