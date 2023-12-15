@@ -17,7 +17,7 @@
 
 #pragma comment(lib, "ws2_32.lib") // 链接 ws2_32.lib 库文件到此项目中
 
-#define DEFAULT_WINDOW_SIZE 10 // 默认窗口大小
+#define DEFAULT_WINDOW_SIZE 32 // 默认窗口大小
 
 /*
 Data Packet Format:
