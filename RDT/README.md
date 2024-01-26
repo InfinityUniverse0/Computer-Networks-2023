@@ -14,6 +14,8 @@
 2. 滑动窗口机制中不同窗口大小对性能的影响（累计确认和选择确认两种情形）；
 3. 滑动窗口机制中相同窗口大小情况下，累计确认和选择确认的性能比较。
 
+**注**：目前`main`分支中的版本为**最新**的**实验3-3**的代码，**实验3-1**的代码参见Tag [Lab3-1](https://github.com/InfinityUniverse0/Computer-Networks-2023/releases/tag/Lab3-1)，**实验3-2**的代码参见Tag [Lab3-2](https://github.com/InfinityUniverse0/Computer-Networks-2023/releases/tag/Lab3-2)。当时的代码可能并不完善，可以同时参考最新的代码。
+
 ---
 
 Note:
